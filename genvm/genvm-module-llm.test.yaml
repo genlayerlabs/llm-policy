@@ -1,0 +1,69 @@
+# genvm-module-llm.test.yaml — config that targets backends reachable from
+# this dev machine (OpenRouter + io.net), to drive a real ya-test-runner /
+# genvm-modules llm test of our dispatch.lua.
+#
+# Run from llm-router repo root:
+#   ./genvm/integrate.sh /home/jm/docs/genlayer/genvm/build/out
+#   export OPENROUTER_API_KEY=...    # for OPENROUTERKEY
+#   export IONET_API_KEY=...         # for IONETKEY
+#   /home/jm/docs/genlayer/genvm/build/out/bin/genvm-modules llm \
+#     --config /home/jm/docs/genlayer/llm-router/genvm/genvm-module-llm.test.yaml
+
+bind_address: 127.0.0.1:3031
+
+# Use the dispatch.lua we installed via integrate.sh — these paths land
+# under build/out/{config,lib}/ after `ninja install`.
+lua_script_path: ${exeDir}/../config/genvm-llm-default.lua
+vm_count: 2
+lua_path: ${exeDir}/../lib/genvm-lua/?.lua
+signer_url: "http://localhost:9155/genvm/sign"
+signer_headers: {}
+
+threads: 2
+blocking_threads: 4
+log_disable: tracing*,polling*,tungstenite*,tokio_tungstenite*
+
+backends:
+  openrouter:
+    host: https://openrouter.ai/api
+    provider: openai-compatible
+    key: ${ENV[OPENROUTERKEY]}
+    models:
+      meta-llama/llama-3.3-70b-instruct:
+        supports_json: true
+        supports_image: false
+
+  ionet:
+    host: https://api.intelligence.io.solutions/api
+    provider: openai-compatible
+    key: ${ENV[IONETKEY]}
+    models:
+      meta-llama/Llama-3.3-70B-Instruct:
+        supports_json: true
+        supports_image: false
+
+prompt_templates:
+  eq_comparative:
+    system: |
+      You are a judge tasked with making a binary determination.
+    user: |
+      <primary>#{leader_answer}</primary>
+      <comparison>#{validator_answer}</comparison>
+      <criteria>#{principle}</criteria>
+      Respond with json: {"reason": "...", "result": true|false}
+  eq_non_comparative_leader:
+    system: |
+      Perform the task. Respect all criteria.
+    user: |
+      <task>#{task}</task>
+      <criteria>#{criteria}</criteria>
+      <input>#{input}</input>
+  eq_non_comparative_validator:
+    system: |
+      Judge whether the output satisfies the criteria.
+    user: |
+      <task>#{task}</task>
+      <input>#{input}</input>
+      <criteria>#{criteria}</criteria>
+      <output>#{output}</output>
+      Respond with json: {"reason": "...", "result": true|false}

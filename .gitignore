@@ -1,0 +1,32 @@
+__pycache__/
+*.pyc
+.venv/
+venv/
+.env
+.env.local
+.env.*.local
+
+# Local generated metrics (per-deployment, never committed)
+metrics.lua
+
+# Editor cruft
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+
+# Test artifacts
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Rust skeleton build artifacts
+hosts/rust/target/
+
+# Claude Code runtime state
+.claude/
+
+# Nix-build output symlinks (from genvm/runners-no-embeddings.nix etc.)
+result
+result-*

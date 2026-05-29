@@ -1,0 +1,252 @@
+-- config.example.lua
+-- Example configuration for llm-router. Copy to `config.lua` and edit.
+-- See DESIGN.md §6 for the schema.
+
+return {
+
+    -- ============================================================
+    -- Providers
+    -- ============================================================
+    providers = {
+
+        comput3 = {
+            discovery = "static",
+            base_url  = "https://api.comput3.ai/v1",
+            api_kind  = "openai_compatible",
+            auth_env  = "COMPUT3_API_KEY",
+            tier      = "partner",
+            notes     = "GenLayer partner — Hermes, DeepSeek, Qwen on H200",
+        },
+
+        io_net = {
+            discovery = "static",
+            base_url  = "https://api.intelligence.io.solutions/api/v1",
+            api_kind  = "openai_compatible",
+            auth_env  = "IONET_API_KEY",
+            tier      = "partner",
+        },
+
+        heurist = {
+            discovery = "static",
+            base_url  = "https://llm-gateway.heurist.xyz",
+            api_kind  = "openai_compatible",
+            auth_env  = "HEURIST_API_KEY",
+            tier      = "partner",
+            notes     = "Free credits via referral code 'genlayer'",
+        },
+
+        morpheus = {
+            discovery = "static",
+            base_url  = "https://api.mor.org/api/v1",
+            api_kind  = "openai_compatible",
+            auth_env  = "MORPHEUS_API_KEY",
+            tier      = "partner",
+        },
+
+        chutes = {
+            discovery = "static",
+            base_url  = "https://llm.chutes.ai/v1",
+            api_kind  = "openai_compatible",
+            auth_env  = "CHUTES_API_KEY",
+            tier      = "partner",
+        },
+
+        atoma = {
+            discovery = "static",
+            base_url  = "https://api.atoma.network/v1",
+            api_kind  = "openai_compatible",
+            auth_env  = "ATOMA_API_KEY",
+            tier      = "partner",
+            has_tee   = true,
+            no_log    = true,
+        },
+
+        antseed = {
+            discovery    = "marketplace",
+            discovery_id = "antseed_buyer_node",
+            api_kind     = "openai_compatible",
+            auth_env     = "ANTSEED_API_KEY",  -- may be unset for permissionless mode
+            tier         = "marketplace",
+            notes        = "Dynamic pricing via buyer node (antseed.com)",
+        },
+
+        -- non-partner fallbacks; commented out by default
+        -- openrouter = {
+        --     discovery = "static",
+        --     base_url  = "https://openrouter.ai/api/v1",
+        --     api_kind  = "openai_compatible",
+        --     auth_env  = "OPENROUTER_API_KEY",
+        --     tier      = "fallback",
+        -- },
+        -- groq = {
+        --     discovery = "static",
+        --     base_url  = "https://api.groq.com/openai/v1",
+        --     api_kind  = "openai_compatible",
+        --     auth_env  = "GROQ_API_KEY",
+        --     tier      = "fallback",
+        --     notes     = "Fast, low rate limits",
+        -- },
+    },
+
+    -- ============================================================
+    -- Models
+    -- ============================================================
+    models = {
+
+        ["hermes-3-405b"] = {
+            family = "hermes-3-405b",
+            served_by = {
+                { provider = "comput3", provider_model_id = "Hermes-3-Llama-3.1-405B" },
+            },
+            capabilities = {
+                context           = 128000,
+                supports_tools    = true,
+                supports_json_mode = true,
+                supports_seed     = true,
+            },
+            static_quality_hint = 0.78,
+        },
+
+        ["deepseek-v3"] = {
+            family = "deepseek-v3",
+            served_by = {
+                { provider = "comput3",  provider_model_id = "deepseek-chat" },
+                { provider = "morpheus", provider_model_id = "deepseek-chat" },
+                { provider = "chutes",   provider_model_id = "deepseek-ai/DeepSeek-V3" },
+                { provider = "atoma",    provider_model_id = "deepseek-chat" },
+            },
+            capabilities = {
+                context            = 64000,
+                supports_tools     = true,
+                supports_json_mode = true,
+                supports_seed      = true,
+            },
+            static_quality_hint = 0.82,
+        },
+
+        ["qwen-3-235b"] = {
+            family = "qwen-3-235b",
+            served_by = {
+                { provider = "comput3" },
+                { provider = "io_net" },
+            },
+            capabilities = {
+                context        = 128000,
+                supports_tools = true,
+            },
+            static_quality_hint = 0.76,
+        },
+
+        ["qwen-2.5-vl-72b"] = {
+            family = "qwen-2.5-vl-72b",
+            served_by = {
+                { provider = "io_net" },
+            },
+            capabilities = {
+                context          = 32000,
+                supports_vision  = true,
+            },
+            static_quality_hint = 0.70,
+        },
+
+        ["llama-3.3-70b"] = {
+            family = "llama-3.3-70b",
+            served_by = {
+                { provider = "io_net" },
+                { provider = "morpheus" },
+            },
+            capabilities = {
+                context            = 128000,
+                supports_tools     = true,
+                supports_json_mode = true,
+                supports_seed      = true,
+            },
+            static_quality_hint = 0.72,
+        },
+    },
+
+    -- ============================================================
+    -- Profiles
+    -- ============================================================
+    -- These are TEMPLATES. Edit weights and constraints to taste; the library
+    -- ships no built-in defaults. Two operators starting from the same template
+    -- are encouraged to diverge — diversity is a feature (see DESIGN.md §11).
+    profiles = {
+
+        default = {
+            weights = {
+                quality     = 0.35,
+                speed       = 0.20,
+                cost        = 0.30,
+                free_credit = 0.05,
+                partner     = 0.10,
+            },
+            retry_policy = "balanced",
+        },
+
+        cheap_explore = {
+            extends = "default",
+            weights = {
+                quality     = 0.10,
+                speed       = 0.15,
+                cost        = 0.60,
+                free_credit = 0.15,
+                partner     = 0,
+            },
+        },
+
+        tee_only = {
+            extends = "default",
+            hard_constraints = { privacy = "tee_required" },
+            weights = {
+                quality = 0.50,
+                speed   = 0.20,
+                cost    = 0.30,
+            },
+        },
+
+        agent_tool_use = {
+            extends = "default",
+            -- Note: `needs` here is a hard constraint that the profile adds on top of
+            -- what the contract declares. Future work: per-profile capability filters
+            -- (the current schema folds these into the contract instead).
+            weights = {
+                quality = 0.45,
+                speed   = 0.20,
+                cost    = 0.25,
+                partner = 0.10,
+            },
+        },
+    },
+
+    -- ============================================================
+    -- Retry policies (named tables, referenced from profiles)
+    -- ============================================================
+    retry_policies = {
+        balanced = {
+            ok                  = { action = "terminal" },
+            rate_limit          = { action = "next_candidate", open_breaker_ms = 30000 },
+            timeout             = { action = "next_candidate" },
+            server_error        = { action = "retry_same", attempts = 1, backoff_ms = 500, then_action = "next_candidate" },
+            auth_error          = { action = "disable_provider" },
+            bad_request         = { action = "abort" },
+            content_filter      = { action = "next_candidate" },
+            model_unavailable   = { action = "next_provider_same_model", mark_unavailable_ms = 300000 },
+            context_overflow    = { action = "abort" },
+            network_error       = { action = "retry_same", attempts = 2, backoff_ms = { 200, 600 }, then_action = "next_candidate" },
+            unknown             = { action = "next_candidate" },
+        },
+    },
+
+    -- ============================================================
+    -- Defaults overrides (optional)
+    -- ============================================================
+    defaults = {
+        -- circuit_breaker_threshold     = 3,
+        -- circuit_breaker_rate_limit_ms = 30000,
+        -- circuit_breaker_failure_ms    = 300000,
+        -- discovery_cache_ttl_ms        = 60000,
+        -- ema_alpha                     = 0.2,
+        -- free_credit_threshold_usd     = 1.0,
+    },
+}

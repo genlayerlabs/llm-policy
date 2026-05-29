@@ -1,0 +1,21 @@
+-- Runner for all Lua unit tests. Run from repo root:
+--   lua tests/run_lua.lua
+
+package.path = package.path .. ";./tests/unit/?.lua"
+
+local files = {
+    "tests/unit/profile_inheritance.lua",
+    "tests/unit/weights_and_score.lua",
+    "tests/unit/filter.lua",
+    "tests/unit/derive_needs.lua",
+    "tests/unit/execute.lua",
+}
+
+for _, f in ipairs(files) do
+    io.write("=== " .. f .. " ===\n")
+    dofile(f)
+end
+
+local t = require("_assert")
+local rc = t.summary()
+os.exit(rc == 0 and 0 or 1)
