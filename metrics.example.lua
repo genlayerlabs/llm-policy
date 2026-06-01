@@ -1,6 +1,6 @@
 -- metrics.example.lua
--- Sample output of `tools/bench.py`. The router reads this at init to seed
--- runtime EMAs (see DESIGN.md §8 "metrics.lua vs runtime EMA").
+-- Example metrics seed. The router reads this at init to seed runtime EMAs
+-- (price, latency, quality); the live EMA overwrites these as calls happen.
 --
 -- Keys in `models` use the format "<family>@<provider>" by convention.
 

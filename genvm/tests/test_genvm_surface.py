@@ -82,6 +82,10 @@ M.rs = __llm
 M.providers = __llm.providers
 M.templates = __llm.templates
 
+-- select_providers_for: genvm filters to prompt/format-compatible backends.
+-- For the fake we return the whole providers DB; the greybox chain restricts.
+M.select_providers_for = function(_prompt, _format) return __llm.providers end
+
 M.exec_prompt_transform = function(args)
     local mp = {
         system_message = nil,
@@ -357,3 +361,78 @@ def test_exec_prompt_all_fail_raises_router_failed():
     # The exhaustion log should be present.
     exhaust_logs = [l for l in logs if "exhausted" in (l.get("message") or "")]
     assert exhaust_logs, f"expected an exhaustion log, got: {[l.get('message') for l in logs]}"
+
+
+# ---------------------------------------------------------------------------
+# Greybox: meta.greybox priority chains routed through llm_policy (R.chain)
+# ---------------------------------------------------------------------------
+
+GREYBOX_DB = {
+    "openrouter": {
+        "models": {
+            "deepseek/deepseek-v3.2": {
+                "supports_json": True, "supports_image": False,
+                "meta": {"greybox": {"text": 1}},          # chain priority 1
+            },
+        },
+    },
+    "heurist": {
+        "models": {
+            "meta-llama/llama-3.3-70b-instruct": {
+                "supports_json": True, "supports_image": False,
+                "meta": {"greybox": {"text": 2}},          # chain priority 2
+            },
+        },
+    },
+    "io_net": {
+        "models": {
+            "some-other-model": {                          # NOT in any chain
+                "supports_json": True, "supports_image": False,
+            },
+        },
+    },
+}
+
+
+def test_greybox_chain_order_and_cascade():
+    """meta.greybox builds a priority chain; selection follows it; on overload
+    the cascade walks to the next chain entry; non-chained providers are never
+    tried."""
+    calls = []
+    def handler(p, m, prompt, fmt):
+        calls.append((p, m))
+        if len(calls) == 1:
+            return ("overloaded", 429)                     # primary overloads
+        return {"data": {"Text": "rescued"}, "consumed_gen": 0}
+
+    lua, logs = make_runtime(handler, GREYBOX_DB)
+
+    # confirm greybox mode was detected at init
+    init = [l for l in logs if "initialised" in (l.get("message") or "")]
+    assert init and init[0].get("greybox") is True, f"greybox not detected: {init}"
+
+    ctx = lua.table_from({})
+    args = lua.table_from({"prompt": "ping", "response_format": "text", "images": lua.table_from([])})
+    py = _to_py(lua.globals()["ExecPrompt"](ctx, args, 1_000_000))
+
+    assert py["data"]["Text"] == "rescued"
+    assert calls[0] == ("openrouter", "deepseek/deepseek-v3.2"), f"priority 1 first, got {calls}"
+    assert calls[1] == ("heurist", "meta-llama/llama-3.3-70b-instruct"), f"priority 2 next, got {calls}"
+    assert all(p != "io_net" for p, _ in calls), f"non-chained provider was tried: {calls}"
+
+
+def test_greybox_never_calls_non_chained_provider():
+    """Even on total failure, only chained candidates are attempted."""
+    calls = []
+    def handler(p, m, prompt, fmt):
+        calls.append((p, m))
+        return ("overloaded", 429)
+
+    lua, _ = make_runtime(handler, GREYBOX_DB)
+    ctx = lua.table_from({})
+    args = lua.table_from({"prompt": "ping", "response_format": "text", "images": lua.table_from([])})
+    with pytest.raises(Exception):
+        lua.globals()["ExecPrompt"](ctx, args, 1_000_000)
+
+    tried = {p for p, _ in calls}
+    assert tried == {"openrouter", "heurist"}, f"only the chain should be tried, got {tried}"

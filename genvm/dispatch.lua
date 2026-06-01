@@ -1,25 +1,25 @@
--- dispatch.lua — drop-in replacement for genvm's `genvm-llm-default.lua`.
+-- dispatch.lua — GenVM LLM script that routes through the `llm_policy` algebra.
 --
--- It exposes the same two entry points genvm's Rust side calls into:
+-- Drop-in for genvm's `genvm-llm-default.lua` AND a replacement for
+-- genlayer-node's `genvm-llm-greybox.lua`: same entry points
 --   ExecPrompt(ctx, args, remaining_gen)
 --   ExecPromptTemplate(ctx, args, remaining_gen)
--- but instead of the built-in primer-match loop, routing decisions go through
--- `router.lua`: scoring, retry policy, circuit-breaker, optional marketplace.
+-- and the same greybox surface (filter_text, meta.greybox priority chains,
+-- select_providers_for, cascade on overload) — but the selection + fallback is
+-- a `llm_policy` *sentence* (R.chain + cascade) instead of a hand-rolled loop.
+-- HTTP/auth stay in Rust (`exec_prompt_in_provider`); the Lua side only decides
+-- which (provider, model) to try next.
 --
--- The "host" that the router calls back into is a shim that wraps genvm's
--- own `__llm:exec_prompt_in_provider`, so all HTTP/auth still happens in Rust.
--- The Lua side just decides which (provider, model) pair to try next.
+-- Greybox chains come from `meta.greybox = { text = N, image = M }` on each
+-- model in the YAML (lower N = higher priority), exactly like
+-- genvm-llm-greybox.lua. If no model declares meta.greybox, dispatch falls back
+-- to a weighted `default` profile over the whole catalog (more lenient than the
+-- production script, which errors).
 --
--- To make different validators diverge their routing decisions ("greybox"),
--- drop a `router-overlay.lua` file on the Lua path that returns a partial
--- config table. It is shallow-merged over the catalog auto-derived from
--- `__llm.providers`. Overlay shape:
---   {
---     providers      = { [name] = { tier = "fallback", ... } },
---     models         = { [name] = { quality = 0.9, capabilities = {...} } },
---     profiles       = { default = { weights = {...}, retry_policy = "..." } },
---     retry_policies = { ... },
---   }
+-- Per-validator divergence ("greybox") is organic: each operator's catalog,
+-- chains, and runtime state differ. An optional `router-overlay.lua` on the Lua
+-- path shallow-merges over the auto-derived config (providers/models/profiles/
+-- retry_policies) to tune further. See ../docs/GENVM-LLM-POLICY.md.
 
 local lib_genvm = require("lib-genvm")
 local lib_llm   = require("lib-llm")
@@ -34,16 +34,6 @@ local function load_overlay()
     return {}
 end
 
--- ---------------------------------------------------------------------------
--- Catalog construction from `__llm.providers`.
---
--- GenVM expresses capabilities per (backend, model) pair. The router expresses
--- them per model_family. When a model name appears under multiple backends
--- with disagreeing caps, we OR the booleans (most permissive) — the Rust side
--- will reject a real call if the chosen pair can't actually do the format,
--- and the router will cascade.
--- ---------------------------------------------------------------------------
-
 local function or_caps(a, b)
     local out = {}
     for k, v in pairs(a or {}) do out[k] = v end
@@ -51,15 +41,18 @@ local function or_caps(a, b)
     return out
 end
 
+-- model_name -> use_max_completion_tokens (consumed by the host shim per call).
+local MODEL_UMCT = {}
+
+-- ---------------------------------------------------------------------------
+-- Catalog construction from `__llm.providers`.
+-- ---------------------------------------------------------------------------
+
 local function build_catalog(providers_db, overlay)
-    -- model_name -> { served_by = {...}, capabilities = {...} }
     local model_index = {}
     for backend_name, backend in pairs(providers_db) do
         for model_name, model_cfg in pairs(backend.models or {}) do
-            local entry = model_index[model_name] or {
-                served_by    = {},
-                capabilities = {},
-            }
+            local entry = model_index[model_name] or { served_by = {}, capabilities = {} }
             table.insert(entry.served_by, {
                 provider          = backend_name,
                 provider_model_id = model_name,
@@ -69,8 +62,8 @@ local function build_catalog(providers_db, overlay)
                 supports_vision    = model_cfg.supports_image or false,
                 supports_tools     = model_cfg.supports_tools or false,
                 supports_seed      = true,
-                use_max_completion_tokens = model_cfg.use_max_completion_tokens or false,
             })
+            MODEL_UMCT[model_name] = model_cfg.use_max_completion_tokens or false
             model_index[model_name] = entry
         end
     end
@@ -78,9 +71,7 @@ local function build_catalog(providers_db, overlay)
     local providers = {}
     for backend_name, _ in pairs(providers_db) do
         providers[backend_name] = {
-            -- The router needs base_url / api_kind / auth_env to satisfy its
-            -- schema, but our host shim never uses them (Rust owns transport).
-            base_url  = "managed-by-genvm",
+            base_url  = "managed-by-genvm",   -- Rust owns transport; these satisfy the schema only
             api_kind  = "openai_compatible",
             auth_env  = "managed-by-genvm",
             tier      = "partner",
@@ -91,13 +82,47 @@ local function build_catalog(providers_db, overlay)
     local models = {}
     for model_name, entry in pairs(model_index) do
         models[model_name] = {
-            served_by          = entry.served_by,
-            capabilities       = entry.capabilities,
+            served_by           = entry.served_by,
+            capabilities        = entry.capabilities,
             static_quality_hint = 0.8,
         }
     end
 
-    -- Apply overlay (shallow per-key merge).
+    -- Default profiles/policies: `greybox` (deterministic chain + cascade) and a
+    -- weighted `default` fallback. Overlays shallow-merge on top.
+    local profiles = {
+        default = {
+            weights = { quality = 0.5, speed = 0.2, cost = 0.2, partner = 0.1, free_credit = 0.0 },
+            retry_policy = "default",
+        },
+        greybox = { selector = "chain", retry_policy = "cascade" },
+    }
+    local retry_policies = {
+        default = {
+            rate_limit     = { action = "next_candidate" },
+            timeout        = { action = "next_candidate" },
+            server_error   = { action = "next_candidate" },
+            auth_error     = { action = "disable_provider" },
+            content_filter = { action = "abort" },
+            unknown        = { action = "next_candidate" },
+        },
+        -- cascade mirrors genvm-llm-greybox.lua tryChain: fall through on any
+        -- overload/transient, stop only on auth/bad-request/context overflow.
+        cascade = {
+            rate_limit        = { action = "next_candidate" },
+            timeout           = { action = "next_candidate" },
+            server_error      = { action = "next_candidate" },
+            model_unavailable = { action = "next_candidate" },
+            content_filter    = { action = "next_candidate" },
+            network_error     = { action = "next_candidate" },
+            auth_error        = { action = "disable_provider" },
+            bad_request       = { action = "abort" },
+            context_overflow  = { action = "abort" },
+            unknown           = { action = "next_candidate" },
+        },
+    }
+
+    -- shallow-merge overlay
     if overlay.providers then
         for name, ov in pairs(overlay.providers) do
             providers[name] = providers[name] or {}
@@ -116,42 +141,66 @@ local function build_catalog(providers_db, overlay)
             end
         end
     end
+    if overlay.profiles then
+        for k, v in pairs(overlay.profiles) do profiles[k] = v end
+    end
+    if overlay.retry_policies then
+        for k, v in pairs(overlay.retry_policies) do retry_policies[k] = v end
+    end
 
-    local cfg = {
-        providers      = providers,
-        models         = models,
-        profiles       = overlay.profiles or {
-            default = {
-                weights = {
-                    quality     = 0.5,
-                    speed       = 0.2,
-                    cost        = 0.2,
-                    partner     = 0.1,
-                    free_credit = 0.0,
-                },
-                retry_policy = "default",
-            },
-        },
-        retry_policies = overlay.retry_policies or {
-            default = {
-                rate_limit    = { action = "next_candidate" },
-                timeout       = { action = "next_candidate" },
-                server_error  = { action = "next_candidate" },
-                auth_error    = { action = "disable_provider" },
-                content_filter = { action = "abort" },
-                unknown       = { action = "next_candidate" },
-            },
-        },
-    }
-    return cfg
+    return { providers = providers, models = models, profiles = profiles, retry_policies = retry_policies }
 end
 
 -- ---------------------------------------------------------------------------
--- Host shim: how router.lua reaches back into genvm.
+-- Greybox chains from meta.greybox (faithful to genvm-llm-greybox.lua).
 -- ---------------------------------------------------------------------------
 
--- The genvm ctx is per-call; router.execute is synchronous from our POV, so
--- we just stash it on a closure-captured upvalue before each execute().
+-- Scan providers for `meta.greybox = { text = N, image = M }`; return
+-- { text = {...}, image = {...} } sorted by priority, plus whether any was found.
+local function build_chains_from_meta(providers_db)
+    local chains = { text = {}, image = {} }
+    local found = false
+    for pname, pdata in pairs(providers_db) do
+        for mname, mdata in pairs(pdata.models or {}) do
+            local meta = mdata.meta
+            if type(meta) == "table" and type(meta.greybox) == "table" then
+                found = true
+                for chain_name, priority in pairs(meta.greybox) do
+                    if chains[chain_name] then
+                        table.insert(chains[chain_name], { provider = pname, model = mname, priority = priority })
+                    end
+                end
+            end
+        end
+    end
+    for _, chain in pairs(chains) do
+        table.sort(chain, function(a, b) return a.priority < b.priority end)
+    end
+    return chains, found
+end
+
+-- Intersect an ordered chain with what select_providers_for says is available,
+-- yielding an ordered { {provider=, model=}, ... } for contract.chain.
+local function build_chain(search_in, chain)
+    local out = {}
+    for _, e in ipairs(chain) do
+        local pd = search_in[e.provider]
+        if pd and pd.models then
+            for model_name, _ in pairs(pd.models) do
+                if model_name == e.model then
+                    out[#out + 1] = { provider = e.provider, model = e.model }
+                    break
+                end
+            end
+        end
+    end
+    return out
+end
+
+-- ---------------------------------------------------------------------------
+-- Host shim: how the engine reaches back into genvm.
+-- ---------------------------------------------------------------------------
+
 local current_ctx = nil
 
 local function classify_status(status)
@@ -166,7 +215,6 @@ local function classify_status(status)
 end
 
 local function call_provider(req)
-    -- Rebuild a genvm-shaped request from the router's transport-agnostic one.
     local system_msg, user_msg
     for _, m in ipairs(req.messages or {}) do
         if m.role == "system" then
@@ -182,7 +230,8 @@ local function call_provider(req)
         temperature               = req.temperature or 0.7,
         images                    = req.images or {},
         max_tokens                = req.max_tokens or 1000,
-        use_max_completion_tokens = req.use_max_completion_tokens or false,
+        -- per-model flag (mirrors genvm-llm-greybox.lua setting it per chain entry)
+        use_max_completion_tokens = MODEL_UMCT[req.served_model_id] or false,
         seed                      = req.seed,
     }
 
@@ -211,26 +260,14 @@ local function call_provider(req)
 
     local ue = lib_genvm.rs.as_user_error(result)
     if ue == nil then
-        -- Non-user error: fatal, propagate up.
-        return {
-            ok            = false,
-            error_kind    = "fatal",
-            error_message = tostring(result),
-            _fatal        = true,
-            _raw          = result,
-        }
+        return { ok = false, error_kind = "fatal", error_message = tostring(result),
+                 _fatal = true, _raw = result }
     end
-
     local status = (ue.ctx and ue.ctx.status) or 0
-    return {
-        ok            = false,
-        error_kind    = classify_status(status),
-        http_status   = status,
-        error_message = tostring(ue.causes or ue),
-    }
+    return { ok = false, error_kind = classify_status(status), http_status = status,
+             error_message = tostring(ue.causes or ue) }
 end
 
--- Install host BEFORE loading router.lua (router.init reads `host.log`).
 _G.host = {
     call_provider = call_provider,
     now_ms        = function()
@@ -241,15 +278,15 @@ _G.host = {
     log = function(level, event, fields)
         lib_genvm.log{ level = level, message = event, fields = fields }
     end,
-    env      = function(_) return nil end,   -- router does not need env in this embedding
-    sleep_ms = nil,                          -- no sleep in module Lua VMs
+    env      = function(_) return nil end,
+    sleep_ms = nil,
 }
 
 -- ---------------------------------------------------------------------------
--- Load router.lua and initialise once per VM.
+-- Load the engine and initialise once per VM.
 -- ---------------------------------------------------------------------------
 
-local router = require("router")
+local router = require("router")   -- compat shim -> the llm_policy package
 
 local _catalog = build_catalog(lib_llm.providers, load_overlay())
 local _ok, _err = router.init(_catalog)
@@ -257,18 +294,16 @@ if not _ok then
     error("dispatch.lua: router.init failed: " .. tostring(_err))
 end
 
+local RESOLVED_CHAINS, HAS_CHAINS = build_chains_from_meta(lib_llm.providers)
+
 lib_genvm.log{
     level   = "info",
     message = "llm-router dispatch initialised",
-    providers = (function()
-        local out = {}
-        for name, _ in pairs(_catalog.providers) do out[#out + 1] = name end
-        return out
-    end)(),
+    greybox = HAS_CHAINS,
 }
 
 -- ---------------------------------------------------------------------------
--- Helpers to translate genvm's mapped prompt into a router contract.
+-- genvm mapped prompt -> router contract.
 -- ---------------------------------------------------------------------------
 
 local function build_contract(mapped)
@@ -279,9 +314,7 @@ local function build_contract(mapped)
     table.insert(messages, { role = "user", content = mapped.prompt.user_message })
 
     local response_format
-    if mapped.format == "json" then
-        response_format = { type = "json_object" }
-    elseif mapped.format == "bool" then
+    if mapped.format == "json" or mapped.format == "bool" then
         response_format = { type = "json_object" }   -- bool needs JSON capability
     end
 
@@ -293,20 +326,38 @@ local function build_contract(mapped)
         seed            = mapped.prompt.seed,
         images          = mapped.prompt.images,
         response_format = response_format,
-        -- Internal hints carried to host.call_provider so we can rebuild the
-        -- genvm-shaped Prompt accurately.
-        use_max_completion_tokens = mapped.prompt.use_max_completion_tokens,
     }
 end
 
 local function dispatch(ctx, mapped)
     current_ctx = ctx
     local contract = build_contract(mapped)
-    -- Stash the original mapped.format on the contract so call_provider can
-    -- pass it through verbatim (router strips unknown keys from req).
-    contract.response_format = contract.response_format
-                              or (mapped.format == "text" and nil)
-                              or { type = "json_object" }
+
+    -- Greybox: pick a deterministic chain (text preferred, image fallback) from
+    -- select_providers_for ∩ the meta-derived chains, then route via the chain
+    -- selector. Mirrors genvm-llm-greybox.lua's just_in_backend.
+    if HAS_CHAINS then
+        local ok, search_in = pcall(function()
+            return lib_llm.select_providers_for(mapped.prompt, mapped.format)
+        end)
+        if ok and type(search_in) == "table" then
+            local text_chain  = build_chain(search_in, RESOLVED_CHAINS.text)
+            local image_chain = build_chain(search_in, RESOLVED_CHAINS.image)
+            local chain = (#text_chain > 0) and text_chain or image_chain
+            if #chain > 0 then
+                contract.profile = "greybox"
+                contract.chain   = chain
+            else
+                -- chains configured but nothing compatible — fatal, like production
+                lib_genvm.log{ level = "error", message = "greybox: no provider for prompt" }
+                lib_genvm.rs.user_error({
+                    causes = { "NO_PROVIDER_FOR_PROMPT" }, fatal = true,
+                    ctx = { prompt = mapped.prompt },
+                })
+                return
+            end
+        end
+    end
 
     local result = router.execute(contract)
 
@@ -316,21 +367,11 @@ local function dispatch(ctx, mapped)
         return r
     end
 
-    -- Map router failure into a genvm user_error so the contract can observe
-    -- it via the normal LLM error path.
-    lib_genvm.log{
-        level   = "error",
-        message = "llm-router exhausted all candidates",
-        error   = result.error,
-        trace   = result.trace,
-    }
+    lib_genvm.log{ level = "error", message = "llm-router exhausted all candidates",
+                   error = result.error, trace = result.trace }
     lib_genvm.rs.user_error({
-        causes = { "ROUTER_FAILED", result.error or "unknown" },
-        fatal  = true,
-        ctx = {
-            error = result.error,
-            trace = result.trace,
-        },
+        causes = { "ROUTER_FAILED", result.error or "unknown" }, fatal = true,
+        ctx = { error = result.error, trace = result.trace },
     })
 end
 
@@ -340,9 +381,7 @@ end
 
 function ExecPrompt(ctx, args, remaining_gen)
     ---@cast args LLMExecPromptPayload
-    args.prompt = lib_genvm.rs.filter_text(args.prompt, {
-        'NFKC', 'RmZeroWidth', 'NormalizeWS'
-    })
+    args.prompt = lib_genvm.rs.filter_text(args.prompt, { 'NFKC', 'RmZeroWidth', 'NormalizeWS' })
     local mapped = lib_llm.exec_prompt_transform(args)
     return dispatch(ctx, mapped)
 end

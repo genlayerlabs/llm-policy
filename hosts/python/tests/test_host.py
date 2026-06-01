@@ -2,7 +2,7 @@
 Integration tests for llm_router_host.py.
 
 Run from repo root:
-    pytest tests/integration -v
+    pytest hosts/python/tests -v
 
 These tests exercise the Python -> Lua boundary: config loads, info() reports
 the catalog, rank() returns plausible candidates, marketplace discovery
@@ -15,7 +15,7 @@ from pathlib import Path
 
 import pytest
 
-ROOT = Path(__file__).resolve().parents[2]
+ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT / "hosts" / "python"))
 
 from llm_router_host import LLMRouterHost  # noqa: E402

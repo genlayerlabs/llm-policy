@@ -9,6 +9,9 @@ local files = {
     "tests/unit/filter.lua",
     "tests/unit/derive_needs.lua",
     "tests/unit/execute.lua",
+    "tests/unit/execute_step.lua",
+    "tests/unit/policy_verbs.lua",
+    "tests/unit/parity.lua",
 }
 
 for _, f in ipairs(files) do

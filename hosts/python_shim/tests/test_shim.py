@@ -190,6 +190,18 @@ def test_all_candidates_fail_returns_5xx(client, host):
     assert "exhausted" in err["code"] or "no_candidates" in err["code"]
 
 
+def test_bad_request_abort_maps_to_400(client, host):
+    # bad_request aborts in the router and returns the bare kind (not
+    # "exhausted: ..."). The shim must still map it to 400, not 502.
+    host.set_mock_response("comput3", "hermes-3-405b", _err_response("bad_request", 400))
+    r = client.post("/v1/chat/completions", json={
+        "model": "pin:comput3/hermes-3-405b",
+        "messages": [{"role": "user", "content": "hi"}],
+    })
+    assert r.status_code == 400
+    assert r.json()["error"]["code"] == "bad_request"
+
+
 def test_pin_to_missing_pair_returns_5xx(client):
     r = client.post("/v1/chat/completions", json={
         "model": "pin:nope/nada",

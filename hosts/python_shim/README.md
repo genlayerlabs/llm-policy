@@ -22,11 +22,15 @@ and retry logic without knowing it exists.
 | `hosts/python/` (lib)       | Python apps that import the router as a library           |
 | `hosts/python_shim/` (this) | Any OpenAI-compatible client that hits an HTTP endpoint   |
 
-Concurrency note: lupa serializes Lua execution on a single `LuaRuntime`.
-FastAPI runs sync handlers in a thread pool, but the Lua side is
-one-at-a-time. Fine for one or a handful of concurrent clients; not the
-right tool for hundreds or thousands of concurrent callers. For that
-workload, a luerl-based (Erlang) host is the planned answer.
+Concurrency: the endpoint is `async` and drives `router.execute_step`
+(yield-on-IO). The single `LuaRuntime` is touched only for the microseconds of
+each routing step; the slow upstream HTTP is `await`-ed off the Lua lock, so one
+process overlaps many in-flight requests on one event loop. Because asyncio is
+single-threaded, concurrent requests never run Lua simultaneously and the shared
+router state (breakers, EMA) stays race-free. Scale further with multiple
+processes/replicas behind a load balancer — at which point shared state
+(circuit breakers, credits, the Codex OAuth token) must be externalized; see
+[`docs/POLICY_DESIGN.md`](../../docs/POLICY_DESIGN.md) §9.
 
 ## Running
 
@@ -34,7 +38,7 @@ workload, a luerl-based (Erlang) host is the planned answer.
 # from repo root
 nix-shell -p 'python3.withPackages(ps: with ps; [lupa httpx fastapi uvicorn pydantic])' \
     --run 'python -m hosts.python_shim \
-        --config config.live.lua \
+        --config hosts/python_shim/config.live.lua \
         --metrics metrics.example.lua \
         --default-profile default \
         --host 127.0.0.1 --port 8080'
@@ -52,6 +56,9 @@ Flags:
 - `--default-profile NAME`   profile used when `model` doesn't match a prefix (default `default`)
 - `--host` / `--port` bind address (default `127.0.0.1:8080`)
 - `--timeout-s N`     upstream provider timeout in seconds (default 30)
+- `--codex-auth PATH` Codex `auth.json` for `api_kind=openai_codex` providers
+  (default `~/.codex/auth.json`). Enables the ChatGPT-subscription path —
+  unofficial / ToS-risky; see `docs/OPENAI-CODEX.md`.
 
 ## `model` field convention
 
@@ -111,8 +118,8 @@ latencies, discovery cache). All clients of that shim share it: a
 provider cooldown discovered by one request applies to every subsequent
 request, no matter which client made it. This is usually what you want
 when one machine fronts several clients; it's the operational shift away
-from DESIGN.md §11's "per-process state" assumption, which holds for
-the embed-in-app host but not for the shim.
+from the per-process-state assumption, which holds for the embed-in-app host
+but not for the shim.
 
 If you need isolated state per client, run several shim instances on
 different ports and route clients to the one whose policy you want.

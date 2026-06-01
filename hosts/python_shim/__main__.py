@@ -21,7 +21,11 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "hosts" / "python"))
 
-from llm_router_host import LLMRouterHost, make_http_call_provider  # noqa: E402
+from llm_router_host import (  # noqa: E402
+    LLMRouterHost,
+    make_async_call_provider,
+    make_api_kind_dispatcher,
+)
 
 
 def main() -> None:
@@ -38,13 +42,29 @@ def main() -> None:
     p.add_argument("--port", type=int, default=8080)
     p.add_argument("--timeout-s", type=float, default=30.0,
                    help="upstream provider call timeout in seconds")
+    p.add_argument("--codex-auth", type=Path, default=None,
+                   help="path to Codex auth.json for api_kind=openai_codex "
+                        "(default: ~/.codex/auth.json). Enables the ChatGPT "
+                        "subscription provider — unofficial, ToS-risky.")
     args = p.parse_args()
+
+    # api_kind=openai_codex is served by a dedicated backend (Codex Responses
+    # endpoint + codex login token); everything else uses the OpenAI-compatible
+    # backend. The Codex backend reads auth.json lazily on first use.
+    from codex_auth import CodexAuth          # noqa: E402
+    from codex_backend import make_codex_async_call_provider  # noqa: E402
+
+    codex_auth = CodexAuth(args.codex_auth)
+    call_async = make_api_kind_dispatcher(
+        default=make_async_call_provider(timeout_s=args.timeout_s),
+        handlers={"openai_codex": make_codex_async_call_provider(codex_auth)},
+    )
 
     host = LLMRouterHost(
         router_path=args.router,
         config_path=args.config,
         metrics_path=args.metrics,
-        call_provider=make_http_call_provider(timeout_s=args.timeout_s),
+        call_provider_async=call_async,
     )
     host.init()
 

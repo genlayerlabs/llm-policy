@@ -1,4 +1,6 @@
--- Hard-requirement filtering: each reason a candidate can be rejected.
+-- Hard-requirement filtering, exercised end-to-end through the public
+-- router.rank (engine builds a Policy whose filter is F.requirements +
+-- F.not_disabled, and snapshots RUNTIME into ctx.state).
 
 local t = require("_assert")
 local router = dofile("router.lua")
@@ -42,61 +44,62 @@ local function fresh()
     assert(router.init(make_config()))
 end
 
+-- survivors via the public dry-run rank
+local function survivors(contract)
+    local ranked, err, rejected = router.rank(contract)
+    assert(not err, err)
+    local out = {}
+    for _, item in ipairs(ranked or {}) do out[#out + 1] = item.candidate end
+    return out, rejected or {}
+end
+
 t.test("tee_required keeps only TEE providers", function()
     fresh()
-    local survivors = r.filter_candidates({ requirements = { privacy = "tee_required" } }, 0)
-    t.eq(#survivors, 1, "only one survivor")
-    t.eq(survivors[1].provider_id, "tee_one", "the TEE provider")
+    local s = survivors({ requirements = { privacy = "tee_required" } })
+    t.eq(#s, 1, "only one survivor")
+    t.eq(s[1].provider_id, "tee_one", "the TEE provider")
 end)
 
-t.test("no_log accepts both no_log and TEE providers", function()
+t.test("no_log accepts only no_log/TEE providers", function()
     fresh()
-    local survivors = r.filter_candidates({ requirements = { privacy = "no_log" } }, 0)
-    -- tee_one has no_log=true; partner_a and mkt_one do not
-    t.eq(#survivors, 1)
-    t.eq(survivors[1].provider_id, "tee_one")
+    local s = survivors({ requirements = { privacy = "no_log" } })
+    t.eq(#s, 1)
+    t.eq(s[1].provider_id, "tee_one")
 end)
 
 t.test("vision need filters to vision-capable models", function()
     fresh()
-    local contract = { images = { { url = "x" } } }
-    local survivors = r.filter_candidates(contract, 0)
-    t.eq(#survivors, 1)
-    t.eq(survivors[1].model_family, "vision_model")
+    local s = survivors({ images = { { url = "x" } } })
+    t.eq(#s, 1)
+    t.eq(s[1].model_family, "vision_model")
 end)
 
 t.test("min_context filters models with too-small context", function()
     fresh()
-    local survivors = r.filter_candidates({ requirements = { min_context = 5000 } }, 0)
-    -- chat (8000) survives; vision_model (4000) gone
-    for _, s in ipairs(survivors) do
-        t.eq(s.model_family, "chat", "only chat model")
-    end
+    local s = survivors({ requirements = { min_context = 5000 } })
+    t.truthy(#s >= 1)
+    for _, c in ipairs(s) do t.eq(c.model_family, "chat", "only chat model") end
 end)
 
 t.test("tier filter restricts to a single tier", function()
     fresh()
-    local survivors = r.filter_candidates({ requirements = { tier = "marketplace" } }, 0)
-    t.eq(#survivors, 1)
-    t.eq(survivors[1].provider_id, "mkt_one")
+    local s = survivors({ requirements = { tier = "marketplace" } })
+    t.eq(#s, 1)
+    t.eq(s[1].provider_id, "mkt_one")
 end)
 
 t.test("pin short-circuits to a single candidate", function()
     fresh()
-    local survivors, rejected = r.filter_candidates({
-        requirements = { pin = { provider = "partner_a", model = "chat" } },
-    }, 0)
-    t.eq(#survivors, 1)
-    t.eq(survivors[1].provider_id, "partner_a")
-    t.eq(survivors[1].model_family, "chat")
+    local s = survivors({ requirements = { pin = { provider = "partner_a", model = "chat" } } })
+    t.eq(#s, 1)
+    t.eq(s[1].provider_id, "partner_a")
+    t.eq(s[1].model_family, "chat")
 end)
 
 t.test("pin to non-existent pair returns no survivors and a pin_not_found reason", function()
     fresh()
-    local survivors, rejected = r.filter_candidates({
-        requirements = { pin = { provider = "bogus", model = "bogus" } },
-    }, 0)
-    t.eq(#survivors, 0)
+    local s, rejected = survivors({ requirements = { pin = { provider = "bogus", model = "bogus" } } })
+    t.eq(#s, 0)
     t.eq(#rejected, 1)
     t.eq(rejected[1].reason, "pin_not_found")
 end)
@@ -104,27 +107,22 @@ end)
 t.test("disabled provider is filtered out", function()
     fresh()
     r.runtime().disabled_providers["partner_a"] = "auth_error"
-    local survivors = r.filter_candidates({}, 0)
-    for _, s in ipairs(survivors) do
-        t.falsy(s.provider_id == "partner_a", "partner_a excluded")
+    local s = survivors({})
+    for _, c in ipairs(s) do
+        t.falsy(c.provider_id == "partner_a", "partner_a excluded")
     end
 end)
 
 t.test("tools need filters to tool-capable models", function()
     fresh()
-    local contract = { tools = { { type = "function" } } }
-    local survivors = r.filter_candidates(contract, 0)
-    -- chat has tools; vision_model doesn't
-    for _, s in ipairs(survivors) do
-        t.eq(s.model_family, "chat")
-    end
+    local s = survivors({ tools = { { type = "function" } } })
+    t.truthy(#s >= 1)
+    for _, c in ipairs(s) do t.eq(c.model_family, "chat") end
 end)
 
 t.test("json_mode via response_format filters correctly", function()
     fresh()
-    local contract = { response_format = { type = "json_object" } }
-    local survivors = r.filter_candidates(contract, 0)
-    for _, s in ipairs(survivors) do
-        t.eq(s.model_family, "chat", "only json-capable model survives")
-    end
+    local s = survivors({ response_format = { type = "json_object" } })
+    t.truthy(#s >= 1)
+    for _, c in ipairs(s) do t.eq(c.model_family, "chat", "only json-capable model survives") end
 end)

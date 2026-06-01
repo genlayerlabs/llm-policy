@@ -68,7 +68,9 @@ if [[ $REVERT -eq 1 ]]; then
     [[ -f "$BACKUP" ]] || { echo "no backup at $BACKUP" >&2; exit 3; }
     mv -f "$BACKUP" "$SCRIPT"
     rm -f "$LIBDIR/router.lua" "$LIBDIR/router-overlay.lua"
-    echo "reverted: $SCRIPT restored, router.lua removed"
+    rm -f "$LIBDIR/llm_policy.lua"
+    rm -rf "$LIBDIR/llm_policy"
+    echo "reverted: $SCRIPT restored, router.lua + llm_policy removed"
     exit 0
 fi
 
@@ -82,9 +84,13 @@ fi
 cp "$REPO_ROOT/genvm/dispatch.lua" "$SCRIPT"
 echo "installed dispatch.lua → $SCRIPT"
 
-# Drop router.lua where lua_path can find it.
+# Drop the core where lua_path can find it. router.lua is a compat shim that
+# requires the llm_policy package; copy both the entry file and (if present)
+# the package directory of submodules.
 cp "$REPO_ROOT/router.lua" "$LIBDIR/router.lua"
-echo "installed router.lua → $LIBDIR/router.lua"
+cp "$REPO_ROOT/llm_policy.lua" "$LIBDIR/llm_policy.lua"
+[[ -d "$REPO_ROOT/llm_policy" ]] && cp -r "$REPO_ROOT/llm_policy" "$LIBDIR/llm_policy"
+echo "installed router.lua + llm_policy → $LIBDIR/"
 
 if [[ -n "$OVERLAY" ]]; then
     [[ -f "$OVERLAY" ]] || { echo "overlay not found: $OVERLAY" >&2; exit 4; }

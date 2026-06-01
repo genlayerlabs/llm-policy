@@ -4,7 +4,7 @@ live_smoke.py — drive the router against real LLM providers.
 Run from repo root:
     source .env
     nix-shell -p 'python3.withPackages(ps: [ps.lupa ps.httpx])' \
-        --run 'python tests/live_smoke.py'
+        --run 'python hosts/python_shim/live_smoke.py'
 
 Each scenario prints the chosen provider, every attempted candidate, and the
 trace decision path. Total cost should be a fraction of a cent (Heurist gives
@@ -16,7 +16,8 @@ import os
 import sys
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parents[1]
+HERE = Path(__file__).resolve().parent          # hosts/python_shim
+ROOT = HERE.parents[1]                           # repo root
 sys.path.insert(0, str(ROOT / "hosts" / "python"))
 
 from llm_router_host import LLMRouterHost, make_http_call_provider  # noqa: E402
@@ -70,7 +71,7 @@ def show(result: dict) -> None:
 def make_host() -> LLMRouterHost:
     h = LLMRouterHost(
         router_path = ROOT / "router.lua",
-        config_path = ROOT / "config.live.lua",
+        config_path = HERE / "config.live.lua",
         call_provider = make_http_call_provider(),
     )
     h.init()

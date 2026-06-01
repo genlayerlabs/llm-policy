@@ -1,6 +1,6 @@
 -- config.example.lua
 -- Example configuration for llm-router. Copy to `config.lua` and edit.
--- See DESIGN.md §6 for the schema.
+-- See docs/POLICY_DESIGN.md §4 (the candidate object) for the schema.
 
 return {
 
@@ -170,7 +170,7 @@ return {
     -- ============================================================
     -- These are TEMPLATES. Edit weights and constraints to taste; the library
     -- ships no built-in defaults. Two operators starting from the same template
-    -- are encouraged to diverge — diversity is a feature (see DESIGN.md §11).
+    -- are encouraged to diverge — diversity is a feature (see docs/GENVM-LLM-POLICY.md).
     profiles = {
 
         default = {

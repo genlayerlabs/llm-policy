@@ -79,7 +79,7 @@ def create_app(host, default_profile: str = DEFAULT_PROFILE_FALLBACK) -> FastAPI
         return {"object": "list", "data": [{"id": i, "object": "model"} for i in ids]}
 
     @app.post("/v1/chat/completions")
-    def chat_completions(req: ChatRequest):
+    async def chat_completions(req: ChatRequest):
         if req.stream:
             return _openai_error(
                 "streaming not supported by llm-router shim",
@@ -87,7 +87,9 @@ def create_app(host, default_profile: str = DEFAULT_PROFILE_FALLBACK) -> FastAPI
             )
 
         contract = _request_to_contract(req, default_profile)
-        result = host.execute(contract)
+        # Async driver: the Lua VM is touched only between awaits, so one
+        # shared LuaRuntime overlaps many concurrent requests on one loop.
+        result = await host.execute_async(contract)
 
         if result.get("ok"):
             return _router_response_to_openai(result, req.model)
@@ -182,15 +184,21 @@ def _router_response_to_openai(result: dict, requested_model: str) -> dict:
 def _openai_error_from_router(result: dict) -> JSONResponse:
     error_kind = str(result.get("error") or "unknown")
 
+    # The router returns either a bare kind (abort path: bad_request /
+    # context_overflow; or no_candidates) or "exhausted: <kind>" when it tried
+    # candidates. Normalize to the bare kind before mapping so both forms map
+    # the same way (e.g. an aborting bad_request → 400, not 502).
+    kind = error_kind[len("exhausted: "):] if error_kind.startswith("exhausted: ") else error_kind
+
     if "not initialized" in error_kind:
         status = 500
-    elif error_kind == "no_candidates" or error_kind.startswith("exhausted: no_candidates"):
+    elif kind == "no_candidates":
         status = 503
-    elif error_kind.startswith("exhausted: auth_error"):
+    elif kind == "auth_error":
         status = 401
-    elif error_kind.startswith("exhausted: rate_limit"):
+    elif kind == "rate_limit":
         status = 429
-    elif error_kind.startswith("exhausted: bad_request") or error_kind.startswith("exhausted: context_overflow"):
+    elif kind in ("bad_request", "context_overflow"):
         status = 400
     else:
         status = 502
