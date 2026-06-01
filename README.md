@@ -52,10 +52,11 @@ if result.ok then print(result.response.text) else print(result.error) end
 
 ## Repo layout
 
-This repo **is** the core (sealed). `hosts/` are example host implementations
-that will be extracted to their own repos; `genvm/` is the on-chain adapter
-overlay. The core never references a host — hosts import the core. Deployment
-data (live catalogs, provider docs, credentials) lives with the hosts.
+This repo **is** the core (sealed): pure Lua + a minimal embedding reference
+(`example_host/`) + the on-chain adapter overlay (`genvm/`). The production
+off-chain host moved to its own repo,
+[`genlayerlabs/llm-policy-host`](https://github.com/genlayerlabs/llm-policy-host).
+The core never references a host — hosts import the core.
 
 ```
 # ── core (this repo) ──
@@ -69,42 +70,21 @@ metrics.example.lua        -- example metrics seed
 docs/
   POLICY_DESIGN.md         -- the candidate object + the policy algebra
   GENVM-LLM-POLICY.md      -- using llm_policy as a node's greyboxing algebra
+example_host/              -- the minimal embedding reference (~80 lines, mock provider)
 tests/                     -- Lua unit tests (run_lua.lua, unit/, smoke_rank.lua)
-
-# ── example host implementations (departing) ──
-hosts/
-  python/                  -- embed-in-app host (lupa + httpx); tests/
-  python_shim/             -- OpenAI-compatible FastAPI shim (async)
-                           --   config.live.lua, docs/{PROVIDERS,OPENAI-CODEX}.md,
-                           --   live_smoke.py, tests/
 genvm/                     -- on-chain greybox adapter overlay (dispatch.lua + integrate.sh); tests/
 ```
 
-## HTTP shim (use from any OpenAI-compatible client)
+## Hosts
 
-[`hosts/python_shim/`](./hosts/python_shim/) is an async FastAPI façade exposing
-`POST /v1/chat/completions`. Any OpenAI-compatible client points at it and
-inherits provider selection, fallback and retry without knowing the core exists.
-Routing lives **server-side**: the client's `model` field is ignored unless it
-carries an explicit `profile:` / `family:` / `pin:` prefix.
-
-Example — [subzeroclaw](../../personal/subzeroclaw) (a C agent loop that POSTs
-chat-completions via curl):
-
-```ini
-# ~/.subzeroclaw/config
-endpoint = "http://127.0.0.1:8080/v1/chat/completions"
-api_key  = "dummy"          # subzeroclaw requires non-empty; the shim ignores client auth
-model    = "profile:agent"  # the shim's `agent` profile decides the real (provider, model)
-```
-
-Start the shim with the provider keys in its environment:
-
-```bash
-python -m hosts.python_shim --config hosts/python_shim/config.live.lua \
-    --default-profile agent --host 127.0.0.1 --port 8080
-```
-
-See [`hosts/python_shim/README.md`](./hosts/python_shim/README.md) for the model
-field convention and [`hosts/python_shim/docs/PROVIDERS.md`](./hosts/python_shim/docs/PROVIDERS.md)
-for per-provider auth and the AntSeed node / Codex setup.
+- **`example_host/`** — the minimal embedding reference (~80 lines): load the
+  core, install the `host` table, `init`, `execute`. The "hello world" of
+  embedding `llm_policy`.
+- **Off-chain production host** —
+  [`genlayerlabs/llm-policy-host`](https://github.com/genlayerlabs/llm-policy-host):
+  the async OpenAI-compatible shim + Codex (ChatGPT subscription) + AntSeed + the
+  auth resolver, serving the subzero agent ecosystem. It vendors this core as a
+  git submodule.
+- **On-chain adapter** — [`genvm/dispatch.lua`](./genvm/): a drop-in for
+  genlayer-node's `genvm-llm-greybox.lua` that routes greyboxing through the
+  algebra (see [`docs/GENVM-LLM-POLICY.md`](./docs/GENVM-LLM-POLICY.md)).
