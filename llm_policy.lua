@@ -432,6 +432,21 @@ local function build_filter(spec)
         if spec.any_of  then return F.any_of(map(build_filter, spec.any_of))  end
         if spec.none_of then return F.none_of(map(build_filter, spec.none_of)) end
         if spec.tier_in then return F.tier_in(spec.tier_in) end
+        -- Declarative numeric gates, compiled to F.where (the custom-fn escape
+        -- hatch) so price/quality ceilings are expressible without a programmatic
+        -- Lua sentence. price_max = { input = <usd/Mtok>, output = <usd/Mtok> }
+        -- (either bound optional). quality_min = <0..1> against quality_hint.
+        if spec.quality_min then
+            local q = spec.quality_min
+            return F.where(function(c) return (c.quality_hint or 0) >= q end)
+        end
+        if spec.price_max then
+            local pin, pout = spec.price_max.input, spec.price_max.output
+            return F.where(function(c)
+                return (pin  == nil or (c.price_in  or 0) <= pin)
+                   and (pout == nil or (c.price_out or 0) <= pout)
+            end)
+        end
         if #spec > 0    then return F.all_of(map(build_filter, spec)) end   -- bare list = all_of
     end
     error("llm_policy: invalid filter spec")
