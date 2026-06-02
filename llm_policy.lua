@@ -422,6 +422,7 @@ local FILTER_NULLARY = {
 }
 
 local function build_filter(spec)
+    if type(spec) == "function" then return spec end  -- already a composed F.* / F.where sentence
     if type(spec) == "string" then
         local ctor = FILTER_NULLARY[spec]
         if not ctor then error("llm_policy: unknown filter atom '" .. spec .. "'") end
@@ -462,6 +463,7 @@ local function compile_filter(spec)
 end
 
 local function build_mutate(spec)
+    if type(spec) == "function" then return spec end  -- already a composed M.* sentence
     if spec == nil or spec == "identity" then return mutate.identity end
     if type(spec) == "table" then
         if spec.pipe         then return mutate.pipe(map(build_mutate, spec.pipe)) end
@@ -483,7 +485,9 @@ local function build_policy_for(profile, contract)
     local weights = merged_weights(profile, contract)
     local scorer  = R.weighted(weights)
     local selector
-    if profile.selector == "softmax_sample" then
+    if type(profile.select) == "function" then
+        selector = profile.select              -- explicit R.* sentence (argmax/chain/softmax/custom)
+    elseif profile.selector == "softmax_sample" then
         selector = R.softmax_sample(scorer, profile.selector_opts)
     elseif profile.selector == "chain" then
         -- greybox: deterministic priority chain. The chain may be supplied
