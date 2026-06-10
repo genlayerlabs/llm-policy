@@ -191,6 +191,27 @@ t.test("trace records every attempt and the final selection", function()
     t.truthy(res.trace.total_latency_ms ~= nil, "total_latency_ms set")
 end)
 
+t.test("trace attempts carry the upstream error message, truncated", function()
+    reset()
+    mock_host({
+        p1 = { { ok = false, error_kind = "rate_limit", http_status = 429,
+                 error_message = "quota exceeded for key" } },
+        p2 = { { ok = false, error_kind = "unknown", http_status = 402,
+                 error_message = string.rep("x", 1000) } },
+        p3 = { { ok = true, response = { text = "good" } } },
+    })
+    local res = router.execute({ prompt = "hi", profile = "default" })
+    t.truthy(res.ok)
+    local by_provider = {}
+    for _, e in ipairs(res.trace.decision_path) do
+        if e.event == "attempted" then by_provider[e.provider_id] = e end
+    end
+    t.eq(by_provider.p1.error_message, "quota exceeded for key",
+         "short message recorded verbatim")
+    t.eq(#by_provider.p2.error_message, 300, "long message truncated to 300 chars")
+    t.falsy(by_provider.p3.error_message, "successful attempt has no error_message")
+end)
+
 t.test("circuit breaker opens after rate_limit with open_breaker_ms", function()
     reset()
     mock_host({

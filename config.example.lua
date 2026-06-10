@@ -234,6 +234,7 @@ return {
             model_unavailable   = { action = "next_provider_same_model", mark_unavailable_ms = 300000 },
             context_overflow    = { action = "abort" },
             network_error       = { action = "retry_same", attempts = 2, backoff_ms = { 200, 600 }, then_action = "next_candidate" },
+            payment_required    = { action = "next_candidate", open_breaker_ms = 300000 },
             unknown             = { action = "next_candidate" },
         },
     },

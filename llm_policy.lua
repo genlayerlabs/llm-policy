@@ -769,6 +769,11 @@ local function handle_response(state, response)
     if not response.ok then
         event.error_kind  = response.error_kind or "unknown"
         event.http_status = response.http_status
+        -- Keep the upstream error body in the trace (truncated): without it,
+        -- "exhausted: <kind>" is all an operator ever sees of a failure.
+        if response.error_message ~= nil then
+            event.error_message = string.sub(tostring(response.error_message), 1, 300)
+        end
     end
     state.trace.decision_path[#state.trace.decision_path + 1] = event
 
