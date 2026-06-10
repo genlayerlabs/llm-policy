@@ -12,6 +12,11 @@
 --   tryChain pcall fall-through on overload      -> the `cascade` sequence
 --   lib.rs.filter_text(NFKC/RmZeroWidth/NormWS)  -> M.filter_text{...}
 --   per-call OsRng seed (per-node variation)     -> host/runtime (NOT policy)
+--
+-- NOTE: this is the closure form (legacy compile path: works, but carries no
+-- policy hash). The same sentence written as a Σ_pol IR term — or as a
+-- declarative profile, which lowers to one — gets a canonical identity a
+-- validator can commit to/audit. See ../docs/SIGMA-POL.md.
 
 local F      = require("llm_policy.filter")
 local R      = require("llm_policy.rank")

@@ -1,10 +1,15 @@
 # llm_policy — design
 
-> **Status:** implemented (R2). Defines the core `llm_policy` package — the
-> **candidate object** and the **policy algebra** over it
+> **Status:** implemented (R2 + Σ_pol IR). Defines the core `llm_policy`
+> package — the **candidate object** and the **policy algebra** over it
 > (`llm_policy/{filter,rank,mutate,sequence,policy,candidate,util}.lua`; entry
-> `llm_policy.lua`, with `router.lua` a compatibility shim). Companion to
-> [`GENVM-LLM-POLICY.md`](./GENVM-LLM-POLICY.md).
+> `llm_policy.lua`, with `router.lua` a compatibility shim). Since the IR
+> landed (`llm_policy/{sig,term,fields,interp,elaborate,ir}.lua`), policies
+> are **terms**: declarative profiles lower to the Σ_pol IR and carry a
+> canonical identity; the closure DSL described here remains as the verbs'
+> implementation and the local-only escape hatch. Companions:
+> [`SIGMA-POL.md`](./SIGMA-POL.md) (the IR: terms, encoding, hashing,
+> normative semantics) and [`GENVM-LLM-POLICY.md`](./GENVM-LLM-POLICY.md).
 
 ## 1. What this is
 
@@ -40,7 +45,7 @@ only difference between them is one explicit input — the `seed`:
 | Consumer | Wants | Selector | `seed` |
 |---|---|---|---|
 | **subzero** (off-chain agent fleet) | **converge** on the best available; resilience + cost | `argmax` | `nil` / fixed |
-| **GenVM greyboxing** (on-chain) | **diverge** unpredictably-but-reproducibly; attack defense | `softmax_sample` / `epsilon_diverse` | `H(tx_id, node_addr)` |
+| **GenVM greyboxing** (on-chain) | **diverge** unpredictably-but-reproducibly; attack defense | `chain` / seeded `sample` | `H(tx_id, node_addr)` |
 
 > **GenVM diverges to defend. Subzero converges to resist. Same mechanism,
 > inverted teleology.**
@@ -210,13 +215,17 @@ R.custom(fn(c, ctx) ... end)        -- pure escape hatch
 
 -- selectors: scorer -> ordered list.  The convergence<->divergence axis.
 R.argmax(scorer)                              -- deterministic (subzero)
-R.softmax_sample(scorer, { temp = 0.5 })      -- seeded stochastic (greybox); uses ctx.seed
-R.epsilon_diverse(scorer, { epsilon = 0.2 })  -- with prob e a non-top, seeded
-R.shuffle_ties(scorer, { band = 0.05 })       -- mild divergence: seeded shuffle within a score band
+R.chain{ {provider=, model=}, ... }           -- fixed priority whitelist (greybox)
+R.softmax_sample(scorer, { temp = 0.5 })      -- seeded stochastic; LEGACY (uses math.exp,
+                                              -- libm-dependent) — the IR `sample` op is the
+                                              -- normative seeded selector (SIGMA-POL.md §5.3)
 ```
 
 The scorer is shared and pure; only the selector reads `ctx.seed`. No seed →
-reproducible `argmax`. Seed set → reproducible divergence.
+reproducible `argmax`. Seed set → reproducible divergence. The IR adds
+`ordered` (keep input order) and the transcendental-free rank-geometric
+`sample`; breaker demotion, which the legacy selectors performed silently, is
+written explicitly in the IR as `gate(not(is("breaker_open")), scorer)`.
 
 ### 5.3 `mutate` — per-attempt request transform (open; pure + declarative)
 
@@ -302,6 +311,13 @@ each attempt `mutate(request)` → emit the `call` step → on failure consult
 `sequence` → advance → `mutate` again. The engine becomes an interpreter of the
 algebra; today's scoring/filter/retry code becomes the standard library.
 
+How a Policy is *built* (one language): a declarative profile lowers through
+`llm_policy.elaborate` to a Σ_pol term and compiles via `ir.compile`
+(check → normalize → eval), so every profile carries `trace.policy_fingerprint`;
+a per-call term arrives as `contract.policy_ir` (data, never code), met with
+the host envelope. Only profiles containing Lua closures take the legacy
+closure-compile path — local-only, no identity. See SIGMA-POL.md §6.
+
 ## 7. The two reference policies
 
 ```lua
@@ -317,6 +333,8 @@ Policy{
 Policy{
   filter   = F.all_of{ F.requirements(), F.tier_in{ "partner", "tee" } },   -- trusted only
   select   = R.softmax_sample(R.weighted{ quality = 0.7, cost = 0.3 }, { temp = 0.5 }),
+                                         -- closure form; the wire/normative seeded
+                                         -- selector is the IR `sample` (SIGMA-POL §5.3)
   mutate   = M.pipe{
     M.filter_text{ "NFKC", "RmZeroWidth", "NormalizeWS" },
     M.jitter{ temperature = 0.3 },
@@ -338,6 +356,14 @@ Purity makes this hold; the test makes it real. The conformance test is the
 artifact's thesis statement as code: drive identical inputs through mlua and
 lupa and assert identical `ordered` + `request'` + directives. On-chain
 divergence comes only from different `seed` / `catalog` / `state`, by design.
+
+The IR sharpens this from a property into an artifact: the executable spec is
+`tests/golden/sigma_pol_v1.json` (encodings, fingerprints, decisions —
+replayed bit-for-bit under lua5.4 and lupa), and initiality reduces
+conformance of any new interpreter to a finite per-op checklist
+(SIGMA-POL.md §7). The semantics use only correctly-rounded IEEE operations —
+no transcendentals — so the invariant holds across libms, not just across
+the two runtimes we test.
 
 ## 9. Relationship to hosts
 
