@@ -224,7 +224,8 @@ return {
     -- ============================================================
     retry_policies = {
         balanced = {
-            ok                  = { action = "terminal" },
+            -- success needs no entry: the engine returns on response.ok; only
+            -- error kinds are classified, over the closed sequence.ACTIONS set.
             rate_limit          = { action = "next_candidate", open_breaker_ms = 30000 },
             timeout             = { action = "next_candidate" },
             server_error        = { action = "retry_same", attempts = 1, backoff_ms = 500, then_action = "next_candidate" },
@@ -238,6 +239,29 @@ return {
             unknown             = { action = "next_candidate" },
         },
     },
+
+    -- ============================================================
+    -- Σ_pol IR knobs (optional; see docs/SIGMA-POL.md)
+    -- ============================================================
+
+    -- Observation-vocabulary extensions: extra candidate fields that IR
+    -- policies may observe via cmp/is/field. Sort Num|Bool; the default is
+    -- mandatory (determinism when the field is absent). Reads cand[name]
+    -- unless a getter is provided.
+    -- fields = {
+    --     region_score = { sort = "Num", default = 0 },
+    -- },
+
+    -- Host envelope: a Pred term ∧-ed onto every per-call `policy_ir`, so
+    -- callers can narrow these invariants but never widen them.
+    -- policy_envelope = { "and", { "min_tier", "marketplace" },
+    --                            { "cmp", "price_out", "le", 50 } },
+
+    -- Host-blessed named Xforms, referenced from terms as { "custom", "name" }.
+    -- customs = { my_xform = function(req, cand, ctx) ... return req end },
+
+    -- A profile may also pin a full IR policy directly:
+    -- profiles.pinned = { policy_ir = { "policy", { "ev_zero" }, ... } }
 
     -- ============================================================
     -- Defaults overrides (optional)

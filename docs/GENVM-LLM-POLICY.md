@@ -81,10 +81,13 @@ Stochastic **model selection** is *not* recommended: it is hard to reason about
 and stresses consensus. Selection should stay **deterministic** (priority
 `chain` or scored `argmax`) so it is reproducible and auditable. The
 unpredictable part belongs in **`mutate`**: a per-call seed and seeded random
-mutations (param jitter, prompt/image filters). So `softmax_sample`-style
-stochastic selection is a niche off-chain load-spreading tool, **not** the
-greyboxing mechanism. Divergence lives in mutation; selection stays
-deterministic.
+mutations (param jitter, prompt/image filters). So seeded-sampling selection
+(the IR `sample` op — rank-geometric, transcendental-free; SIGMA-POL.md §5.3)
+is a niche off-chain load-spreading tool, **not** the greyboxing mechanism.
+Divergence lives in mutation; selection stays deterministic. A side benefit
+of policies-as-terms for validators: a node's policy has a canonical hash
+(SIGMA-POL.md §4), so an operator can commit to, publish, or audit a policy
+without revealing catalog or state.
 
 ## Where the diversity actually comes from: the operators
 
