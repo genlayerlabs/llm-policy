@@ -390,18 +390,61 @@ end
 -- (llm_policy.filter / llm_policy.rank). The engine below builds a Policy from
 -- them and snapshots RUNTIME into ctx.state.
 
+-- Pure recovery views — the SINGLE source of truth for breaker/disable
+-- recovery math. Given the raw RUNTIME entry and now_ms, they compute the
+-- effective state WITHOUT touching RUNTIME; the mutating *_state wrappers
+-- below apply their verdict as a side effect, and any read-only consumer
+-- (M.provider_status) uses the views directly. Duplicating this math
+-- instead of sharing it is how the two copies drift.
+
+-- -> { open, consecutive_failures, opened_at_ms, ms_until_recovery }
+local function breaker_view(b, now_ms)
+    if not b then
+        return { open = false, consecutive_failures = 0, ms_until_recovery = 0 }
+    end
+    local cf = b.consecutive_failures or 0
+    if not b.open then
+        return { open = false, consecutive_failures = cf,
+                 opened_at_ms = b.opened_at_ms, ms_until_recovery = 0 }
+    end
+    local opened = b.opened_at_ms or 0
+    local window = DEFAULTS.circuit_breaker_rate_limit_ms
+    if now_ms - opened >= window then
+        -- auto-recovered (in the view; the wrapper resets RUNTIME)
+        return { open = false, recovered = true, consecutive_failures = cf,
+                 opened_at_ms = opened, ms_until_recovery = 0 }
+    end
+    return { open = true, consecutive_failures = cf, opened_at_ms = opened,
+             ms_until_recovery = math.max(0, opened + window - now_ms) }
+end
+
+-- -> nil if absent/expired, else { kind, at_ms, ms_until_recovery }.
+-- Accepts the { kind, at_ms } shape and legacy reason strings (at_ms
+-- unknown -> 0, i.e. expiring/expired; the wrapper stamps them instead).
+local function disable_view(d, now_ms)
+    if d == nil then return nil end
+    local kind, at_ms
+    if type(d) == "table" then
+        kind, at_ms = d.kind, d.at_ms or 0
+    else
+        kind, at_ms = tostring(d), 0
+    end
+    local ttl = DEFAULTS.disable_provider_ttl_ms
+    if now_ms - at_ms >= ttl then return nil end
+    return { kind = kind, at_ms = at_ms,
+             ms_until_recovery = math.max(0, at_ms + ttl - now_ms) }
+end
+
 local function circuit_breaker_state(provider_id, now_ms)
     local b = RUNTIME.circuit_breakers[provider_id]
-    if not b or not b.open then return false end
-    local since = now_ms - (b.opened_at_ms or 0)
-    local ttl = DEFAULTS.circuit_breaker_rate_limit_ms
-    if since >= ttl then
+    if not b then return false end
+    local v = breaker_view(b, now_ms)
+    if b.open and not v.open then
         -- breaker auto-recovers
         b.open = false
         b.consecutive_failures = 0
-        return false
     end
-    return true
+    return v.open
 end
 
 -- Disabled-provider check with TTL expiry. Entries are { kind, at_ms } and
@@ -416,8 +459,7 @@ local function disabled_provider_state(provider_id, now_ms)
         d = { kind = tostring(d), at_ms = now_ms }
         RUNTIME.disabled_providers[provider_id] = d
     end
-    local since = now_ms - (d.at_ms or 0)
-    if since >= DEFAULTS.disable_provider_ttl_ms then
+    if disable_view(d, now_ms) == nil then
         -- disable auto-expires
         RUNTIME.disabled_providers[provider_id] = nil
         return false
