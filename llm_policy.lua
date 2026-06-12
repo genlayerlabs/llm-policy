@@ -425,79 +425,24 @@ local function build_ctx(contract, now_ms)
     }
 end
 
--- Declarative spec -> verb compilers, so a config profile can express a full
--- sentence (filter / mutate as data, not just weights). Named combinators only;
--- the custom-fn escape hatches (F.where / R.custom / M.custom) need a
--- programmatic Lua sentence (compose via the exposed M.dsl).
-local function map(fn, list)
-    local out = {}
-    for i, v in ipairs(list) do out[i] = fn(v) end
-    return out
-end
-
-local FILTER_NULLARY = {
-    requirements   = F.requirements,
-    not_disabled   = F.not_disabled,
-    breaker_closed = F.breaker_closed,
-    scope_matches  = F.scope_matches,
-}
-
-local function build_filter(spec)
-    if type(spec) == "function" then return spec end  -- already a composed F.* / F.where sentence
-    if type(spec) == "string" then
-        local ctor = FILTER_NULLARY[spec]
-        if not ctor then error("llm_policy: unknown filter atom '" .. spec .. "'") end
-        return ctor()
-    end
-    if type(spec) == "table" then
-        if spec.all_of  then return F.all_of(map(build_filter, spec.all_of))  end
-        if spec.any_of  then return F.any_of(map(build_filter, spec.any_of))  end
-        if spec.none_of then return F.none_of(map(build_filter, spec.none_of)) end
-        if spec.tier_in then return F.tier_in(spec.tier_in) end
-        -- Declarative numeric gates, compiled to F.where (the custom-fn escape
-        -- hatch) so price/quality ceilings are expressible without a programmatic
-        -- Lua sentence. price_max = { input = <usd/Mtok>, output = <usd/Mtok> }
-        -- (either bound optional). quality_min = <0..1> against quality_hint.
-        if spec.quality_min then
-            local q = spec.quality_min
-            return F.where(function(c) return (c.quality_hint or 0) >= q end)
-        end
-        if spec.quality_max then
-            local q = spec.quality_max
-            return F.where(function(c) return (c.quality_hint or 0) < q end)
-        end
-        if spec.price_max then
-            local pin, pout = spec.price_max.input, spec.price_max.output
-            return F.where(function(c)
-                local ok = (pin  == nil or (c.price_in  or 0) <= pin)
-                       and (pout == nil or (c.price_out or 0) <= pout)
-                if ok then return true end
-                return false, "price_max"
-            end)
-        end
-        if #spec > 0    then return F.all_of(map(build_filter, spec)) end   -- bare list = all_of
-    end
-    error("llm_policy: invalid filter spec")
-end
-
+-- The declarative vocabulary has exactly ONE compiler: llm_policy.elaborate
+-- (spec -> Σ_pol term -> interp). The functions below only handle the closure
+-- escape hatch — a profile whose verbs are WHOLE composed functions (F.* /
+-- mutate.* sentences). Mixing declarative parts with closures inside one spec
+-- is not supported: it would require a second, shadow lowering of the same
+-- vocabulary, kept semantically identical to elaborate by hand forever.
 local function compile_filter(spec)
     if spec == nil then return F.all_of{ F.requirements(), F.not_disabled() } end  -- default
-    return build_filter(spec)
+    if type(spec) == "function" then return spec end  -- a composed F.* / F.where sentence
+    error("llm_policy: a profile with closures must provide `filter` as a whole " ..
+          "composed function (or none); declarative filter specs lower via the IR")
 end
 
 local function build_mutate(spec)
-    if type(spec) == "function" then return spec end  -- already a composed M.* sentence
     if spec == nil or spec == "identity" then return mutate.identity end
-    if type(spec) == "table" then
-        if spec.pipe         then return mutate.pipe(map(build_mutate, spec.pipe)) end
-        if spec.filter_text  then return mutate.filter_text(spec.filter_text)  end
-        if spec.filter_image then return mutate.filter_image(spec.filter_image) end
-        if spec.jitter       then return mutate.jitter(spec.jitter)            end
-        if spec.set_param    then return mutate.set_param(spec.set_param)      end
-        if spec.clamp        then return mutate.clamp(spec.clamp)              end
-        if #spec > 0         then return mutate.pipe(map(build_mutate, spec))  end  -- bare list = pipe
-    end
-    error("llm_policy: invalid mutate spec")
+    if type(spec) == "function" then return spec end  -- a composed mutate.* sentence
+    error("llm_policy: a profile with closures must provide `mutate` as a whole " ..
+          "composed function (or none); declarative mutate specs lower via the IR")
 end
 
 -- Does a declarative spec smuggle a Lua closure anywhere? Closures are the

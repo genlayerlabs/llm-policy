@@ -1,5 +1,7 @@
--- Elaboration: legacy declarative surface -> Σ_pol terms, with behavioral
--- parity against the legacy compiled path (same config, same ranking).
+-- Elaboration: the declarative surface -> Σ_pol terms. The declarative
+-- vocabulary has exactly one compiler (elaborate); these tests pin its
+-- lowerings term-by-term, plus the engine's wiring of an elaborated profile
+-- against a from-scratch elaboration (same config, same ranking).
 
 local t  = require("_assert")
 local ir = require("llm_policy.ir")
@@ -44,7 +46,7 @@ t.test("mutate specs lower to seq with per-param ops, maps in sorted order", fun
         "from_ctx becomes inject_seed; keys sorted")
 end)
 
--- ---- behavioral parity with the legacy compiled path ------------------------
+-- ---- engine wiring vs hand elaboration --------------------------------------
 
 local router = dofile("router.lua")
 local r = router._test
@@ -82,7 +84,10 @@ local function fresh()
     assert(router.init(config()))
 end
 
-t.test("elaborated profile ranks identically to the legacy compiled profile", function()
+t.test("engine elaboration of a profile ranks like the hand-elaborated term", function()
+    -- Both arms lower through elaborate (the declarative vocabulary has one
+    -- compiler); this pins the ENGINE's wiring — merged weights, retry table,
+    -- schema — against a from-scratch elaboration of the same profile.
     fresh()
     local legacy = router.rank({ profile = "hardened" })
 
@@ -102,7 +107,7 @@ t.test("elaborated profile ranks identically to the legacy compiled profile", fu
     end
 end)
 
-t.test("elaborated mutate behaves like the legacy one (directive + seeded jitter)", function()
+t.test("engine-wired mutate behaves like the hand-elaborated one (directive + seeded jitter)", function()
     fresh()
     local captured
     host.call_provider = function(req) captured = req; return { ok = true, response = {} } end
