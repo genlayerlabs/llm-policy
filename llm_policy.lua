@@ -37,7 +37,7 @@ local CATALOG = {
 local RUNTIME = {
     circuit_breakers   = {},  -- [provider_id] = { open, opened_at_ms, consecutive_failures }
     ema_metrics        = {},  -- [provider_id .. "|" .. model_family] = { ema_latency_ms, success_rate_ewma, n }
-    disabled_providers = {},  -- [provider_id] = reason_string
+    disabled_providers = {},  -- [provider_id] = { kind = error_kind, at_ms } (legacy: reason_string)
     discovery_cache    = {},  -- [discovery_id] = { offers, fetched_at_ms }
     initialized        = false,
 }
@@ -47,6 +47,7 @@ local DEFAULTS = {
     circuit_breaker_threshold       = 3,
     circuit_breaker_rate_limit_ms   = 30 * 1000,
     circuit_breaker_failure_ms      = 5 * 60 * 1000,
+    disable_provider_ttl_ms         = 5 * 60 * 1000,
     discovery_cache_ttl_ms          = 60 * 1000,
     ema_alpha                       = 0.2,
     free_credit_threshold_usd       = 1.0,
@@ -68,6 +69,10 @@ local function host_log(level, event, fields)
     if host and host.log then
         host.log(level, event, fields or {})
     end
+end
+
+local function clock()
+    return (host and host.now_ms and host.now_ms()) or 0
 end
 
 -- ===========================================================================
@@ -175,6 +180,8 @@ local function seed_runtime_from_metrics(metrics)
                 success_rate_ewma = mm.success_rate_24h or 1.0,
                 price_in          = mm.price_in_usd_per_mtok,
                 price_out         = mm.price_out_usd_per_mtok,
+                -- without this, R.quality always fell back to the static hint
+                last_quality_eval = mm.last_quality_eval,
                 n                 = 0,  -- bench observations don't count as live observations
             }
             ::continue::
@@ -293,6 +300,14 @@ function M.restore_state(snapshot)
             RUNTIME[k] = deep_copy(v)
         end
     end
+    -- Back-compat: old snapshots stored disabled_providers as plain reason
+    -- strings (permanent until restart). Upgrade them to the TTL-bearing
+    -- { kind, at_ms } shape so they expire after a full TTL from now.
+    for pid, d in pairs(RUNTIME.disabled_providers or {}) do
+        if type(d) ~= "table" then
+            RUNTIME.disabled_providers[pid] = { kind = tostring(d), at_ms = clock() }
+        end
+    end
     return true, nil
 end
 
@@ -375,18 +390,161 @@ end
 -- (llm_policy.filter / llm_policy.rank). The engine below builds a Policy from
 -- them and snapshots RUNTIME into ctx.state.
 
+-- Pure recovery views — the SINGLE source of truth for breaker/disable
+-- recovery math. Given the raw RUNTIME entry and now_ms, they compute the
+-- effective state WITHOUT touching RUNTIME; the mutating *_state wrappers
+-- below apply their verdict as a side effect, and any read-only consumer
+-- (M.provider_status) uses the views directly. Duplicating this math
+-- instead of sharing it is how the two copies drift.
+
+-- -> { open, consecutive_failures, opened_at_ms, ms_until_recovery }
+local function breaker_view(b, now_ms)
+    if not b then
+        return { open = false, consecutive_failures = 0, ms_until_recovery = 0 }
+    end
+    local cf = b.consecutive_failures or 0
+    if not b.open then
+        return { open = false, consecutive_failures = cf,
+                 opened_at_ms = b.opened_at_ms, ms_until_recovery = 0 }
+    end
+    local opened = b.opened_at_ms or 0
+    local window = DEFAULTS.circuit_breaker_rate_limit_ms
+    if now_ms - opened >= window then
+        -- auto-recovered (in the view; the wrapper resets RUNTIME)
+        return { open = false, recovered = true, consecutive_failures = cf,
+                 opened_at_ms = opened, ms_until_recovery = 0 }
+    end
+    return { open = true, consecutive_failures = cf, opened_at_ms = opened,
+             ms_until_recovery = math.max(0, opened + window - now_ms) }
+end
+
+-- -> nil if absent/expired, else { kind, at_ms, ms_until_recovery }.
+-- Accepts the { kind, at_ms } shape and legacy reason strings (at_ms
+-- unknown -> 0, i.e. expiring/expired; the wrapper stamps them instead).
+local function disable_view(d, now_ms)
+    if d == nil then return nil end
+    local kind, at_ms
+    if type(d) == "table" then
+        kind, at_ms = d.kind, d.at_ms or 0
+    else
+        kind, at_ms = tostring(d), 0
+    end
+    local ttl = DEFAULTS.disable_provider_ttl_ms
+    if now_ms - at_ms >= ttl then return nil end
+    return { kind = kind, at_ms = at_ms,
+             ms_until_recovery = math.max(0, at_ms + ttl - now_ms) }
+end
+
 local function circuit_breaker_state(provider_id, now_ms)
     local b = RUNTIME.circuit_breakers[provider_id]
-    if not b or not b.open then return false end
-    local since = now_ms - (b.opened_at_ms or 0)
-    local ttl = DEFAULTS.circuit_breaker_rate_limit_ms
-    if since >= ttl then
+    if not b then return false end
+    local v = breaker_view(b, now_ms)
+    if b.open and not v.open then
         -- breaker auto-recovers
         b.open = false
         b.consecutive_failures = 0
+    end
+    return v.open
+end
+
+-- Disabled-provider check with TTL expiry. Entries are { kind, at_ms } and
+-- auto-recover after DEFAULTS.disable_provider_ttl_ms, so one transient
+-- auth_error cannot keep a provider disabled until process restart. Legacy
+-- string entries (pre-TTL snapshots, injected state) are upgraded in place
+-- with at_ms = now so they expire after a full TTL.
+local function disabled_provider_state(provider_id, now_ms)
+    local d = RUNTIME.disabled_providers[provider_id]
+    if d == nil then return false end
+    if type(d) ~= "table" then
+        d = { kind = tostring(d), at_ms = now_ms }
+        RUNTIME.disabled_providers[provider_id] = d
+    end
+    if disable_view(d, now_ms) == nil then
+        -- disable auto-expires
+        RUNTIME.disabled_providers[provider_id] = nil
         return false
     end
     return true
+end
+
+-- Read-only, live provider-side health snapshot for the host's dashboard.
+-- STRICTLY non-mutating: consumes breaker_view/disable_view — the same
+-- recovery math the engine's checks apply — without their side effects, so
+-- a dashboard poll never resets a breaker or clears a disable. Walks
+-- breakers, disables, EMA metrics and the static CATALOG roster.
+function M.provider_status(now_ms)
+    now_ms = now_ms or clock()
+    local providers = {}
+
+    local function ensure(pid)
+        local p = providers[pid]
+        if p == nil then
+            p = {
+                available = true,
+                breaker   = breaker_view(nil, now_ms),
+                disabled  = nil,
+                credits_remaining_usd = nil,
+                models    = {},
+            }
+            providers[pid] = p
+        end
+        return p
+    end
+
+    -- Seed the full roster from the static catalog so every configured
+    -- provider is listed even with no breaker/EMA yet (available, empty).
+    if CATALOG.providers then
+        for pid in pairs(CATALOG.providers) do ensure(pid) end
+    end
+
+    for pid, b in pairs(RUNTIME.circuit_breakers or {}) do
+        local v = breaker_view(b, now_ms)
+        v.recovered = nil  -- wrapper-internal marker, not part of the schema
+        ensure(pid).breaker = v
+    end
+
+    for pid, d in pairs(RUNTIME.disabled_providers or {}) do
+        ensure(pid).disabled = disable_view(d, now_ms)
+    end
+
+    -- EMA metrics: per-model success-rate / latency / pricing, plus credits.
+    for key, m in pairs(RUNTIME.ema_metrics or {}) do
+        local credit_pid = string.match(key, "^__credits|(.+)$")
+        if credit_pid then
+            local p = ensure(credit_pid)
+            -- seed writes free_credits_remaining_usd; accept the plain name
+            -- too in case the writer is updated.
+            p.credits_remaining_usd = m.free_credits_remaining_usd
+                                       or m.credits_remaining_usd
+        else
+            -- pm_key joins provider_id.."|"..model_family; provider ids carry
+            -- no "|", so the first "|" splits cleanly.
+            local bar = string.find(key, "|", 1, true)
+            if bar then
+                local pid    = string.sub(key, 1, bar - 1)
+                local family = string.sub(key, bar + 1)
+                ensure(pid).models[family] = {
+                    success_rate      = m.success_rate_ewma,
+                    avg_latency_ms    = m.ema_latency_ms,
+                    observations      = m.n or 0,
+                    price_in          = m.price_in,
+                    price_out         = m.price_out,
+                    last_quality_eval = m.last_quality_eval,
+                }
+            end
+        end
+    end
+
+    -- Final availability: not auth-disabled AND breaker not open.
+    for _, p in pairs(providers) do
+        p.available = (p.disabled == nil) and (not p.breaker.open)
+    end
+
+    return {
+        schema          = "router_provider_status",
+        generated_at_ms = now_ms,
+        providers       = providers,
+    }
 end
 
 local function merged_weights(profile, contract)
@@ -406,6 +564,14 @@ local function build_ctx(contract, now_ms)
     for pid, _ in pairs(RUNTIME.circuit_breakers) do
         breakers[pid] = circuit_breaker_state(pid, now_ms)
     end
+    -- Snapshot only LIVE disables: TTL expiry happens here (engine side), so
+    -- the pure verbs keep their simple "present = disabled" view.
+    local disabled = {}
+    for pid, _ in pairs(RUNTIME.disabled_providers) do
+        if disabled_provider_state(pid, now_ms) then
+            disabled[pid] = RUNTIME.disabled_providers[pid]
+        end
+    end
     local credits = {}
     for k, slot in pairs(RUNTIME.ema_metrics) do
         local pid = string.match(k, "^__credits|(.+)$")
@@ -416,7 +582,7 @@ local function build_ctx(contract, now_ms)
         state = {
             ema      = RUNTIME.ema_metrics,
             breakers = breakers,
-            disabled = RUNTIME.disabled_providers,
+            disabled = disabled,
             credits  = credits,
             free_credit_threshold_usd = DEFAULTS.free_credit_threshold_usd,
         },
@@ -610,6 +776,18 @@ local function build_request(cand, contract)
     return req
 end
 
+-- Error kinds attributable to the CLIENT's request (malformed body, filtered
+-- content, oversized context) say nothing about provider health, so they must
+-- not count toward the circuit breaker — otherwise a burst of malformed
+-- requests opens every breaker in the catalog and the next valid request gets
+-- no_candidates. Provider-fault kinds (timeout, server_error, network_error,
+-- rate_limit, auth_error, bad_response, unknown) keep counting.
+local CLIENT_FAULT_KINDS = {
+    bad_request      = true,
+    content_filter   = true,
+    context_overflow = true,
+}
+
 local function update_breaker_on_failure(provider_id, now_ms, open_breaker_ms)
     local b = RUNTIME.circuit_breakers[provider_id]
             or { open = false, consecutive_failures = 0 }
@@ -683,10 +861,6 @@ end
 -- over the same machine; async hosts drive it without blocking the Lua VM.
 -- See docs/POLICY_DESIGN.md §6 for the step protocol (Model B, yield-on-IO).
 
-local function clock()
-    return (host and host.now_ms and host.now_ms()) or 0
-end
-
 -- Build the initial machine state from a contract. On a ranking error or an
 -- empty candidate set, `state.done` is set to the terminal result.
 local function new_run_state(contract)
@@ -741,7 +915,7 @@ local function advance(state)
     local ranked = state.ranked
     while state.cursor <= #ranked do
         local cand = ranked[state.cursor].candidate
-        if RUNTIME.disabled_providers[cand.provider_id] then
+        if disabled_provider_state(cand.provider_id, clock()) then
             state.trace.decision_path[#state.trace.decision_path + 1] = {
                 event        = "skipped",
                 provider_id  = cand.provider_id,
@@ -828,14 +1002,18 @@ local function handle_response(state, response)
     local action = sequence.classify(state.policy and state.policy.sequence or {}, error_kind)
     local act    = action.action or "next_candidate"
 
-    update_breaker_on_failure(cand.provider_id, clock(), action.open_breaker_ms)
+    if not CLIENT_FAULT_KINDS[error_kind] then
+        update_breaker_on_failure(cand.provider_id, clock(), action.open_breaker_ms)
+    end
 
     if act == "abort" then
         state.trace.total_latency_ms = clock() - state.started_at
         return finish(state, { ok = false, error = error_kind, trace = state.trace })
 
     elseif act == "disable_provider" then
-        RUNTIME.disabled_providers[cand.provider_id] = error_kind
+        -- TTL'd, not permanent: expires after DEFAULTS.disable_provider_ttl_ms
+        -- (see disabled_provider_state) so a transient auth_error self-heals.
+        RUNTIME.disabled_providers[cand.provider_id] = { kind = error_kind, at_ms = clock() }
         state.trace.decision_path[#state.trace.decision_path + 1] = {
             event       = "provider_disabled",
             provider_id = cand.provider_id,
