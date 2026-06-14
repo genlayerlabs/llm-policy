@@ -91,6 +91,18 @@ t.test("check: top_k wraps an inner selector with a numeric k", function()
     t.eq(T.check({ "top_k", 2.0, { "argmax" } }), "Selector", "an integer-valued float admits")
 end)
 
+t.test("check: in_top_k is a Pred over a Count and a Scorer", function()
+    t.eq(T.check({ "in_top_k", 5, { "field", "quality_hint" } }), "Pred", "membership predicate admits")
+    t.eq(T.check({ "and", { "in_top_k", 5, { "cost" } }, { "tier_eq", "partner" } }),
+         "Pred", "and-composes with ordinary predicates")
+    local s1, e1 = T.check({ "in_top_k", 5 })                  -- missing scorer
+    t.falsy(s1); t.contains(e1, "argument")
+    local s2, e2 = T.check({ "in_top_k", 0, { "cost" } })      -- k must be a Count
+    t.falsy(s2); t.contains(e2, "Count")
+    local s3 = T.check({ "in_top_k", 5, { "argmax" } })        -- Selector in the Scorer slot
+    t.falsy(s3, "the second arg must be a Scorer, not a Selector")
+end)
+
 t.test("normalize: AC flatten + sort makes order irrelevant", function()
     local a = { "cmp", "price_in", "le", 5 }
     local b = { "is", "has_tee" }

@@ -147,6 +147,17 @@ add{ name = "policy-top-k", kind = "policy",
          { "always", { action = "next_candidate" } } },
      candidates = POP, ctx = { request = { requirements = {} }, now_ms = 0 } }
 
+-- 8c. Policy decision: in_top_k as a population-relative FILTER (membership in
+-- the best-k by a scorer) — p3 is outside the top-2 by quality_hint, rejected.
+add{ name = "policy-in-top-k", kind = "policy",
+     term = { "policy",
+         { "ev_zero" },
+         { "in_top_k", 2, { "field", "quality_hint" } },
+         { "field", "quality_hint" },
+         { "argmax" }, { "id" },
+         { "always", { action = "next_candidate" } } },
+     candidates = POP, ctx = { request = { requirements = {} }, now_ms = 0 } }
+
 -- 9. Xform: params, seed injection, clamping, per-param seeded jitter, directive
 add{ name = "xform-seq-seeded", kind = "xform",
      term = { "seq",

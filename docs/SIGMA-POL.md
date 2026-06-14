@@ -274,6 +274,26 @@ speed Scorer; "the 5 best on benchmarks" is `top_k(5, argmax)` over a Scorer
 that sums the benchmark fields. It composes over any inner Selector (e.g.
 `top_k(3, sample(t))` shortlists a seeded draw).
 
+### 5.5 `in_top_k` — population-relative membership (the one such Pred)
+
+`in_top_k(k, scorer)` is a **Pred**, not a Selector: a candidate passes iff it is
+among the best `k` by `scorer`, ranked exactly like `argmax` (score descending,
+input order on ties). It is the **only** predicate whose verdict depends on the
+rest of the population — every other Pred is a per-candidate test. Because it is
+a Pred it lives in the filter and **`and`-composes** with ordinary gates, which
+is what `top_k` (a Selector) cannot do: the intersection of two independent
+shortlists — "in the top 5 by A **and** the top 5 by B, partner tier, price ≤ X"
+— is `and(in_top_k(5, A), in_top_k(5, B), tier_eq("partner"), cmp("price_in","le",X))`,
+then ranked by a `cost` scorer.
+
+The population is `ctx.population`, the policy's input candidate set, exposed by
+`policy.plan` before filtering (request-scoped, never encoded — so no term's
+identity changes). The top-`k` set is computed once per `(ctx, scorer)` and
+memoized. Evaluated with no population in scope (an isolated Pred fold, outside a
+policy) it passes — membership is undefined for a lone candidate. `k` is a
+`Count` (§5.4). This is the algebra's only population-relative predicate; adding
+it kept the carrier `fn(cand, ctx) -> bool` unchanged, so it is append-only.
+
 ## 6. Using it
 
 ```lua

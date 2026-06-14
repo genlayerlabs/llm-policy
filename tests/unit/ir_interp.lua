@@ -153,6 +153,43 @@ t.test("top_k orders by the inner selector and keeps the first k", function()
     t.eq(#wide({ { candidate = cand(), score = 1 } }, ctx()), 1, "k>pool keeps all")
 end)
 
+t.test("in_top_k filters to population-relative membership in the best k", function()
+    -- "top 2 by quality_hint" AS A FILTER, and-composed with an ordinary gate
+    local pol = ir.compile({ "policy",
+        { "ev_zero" },
+        { "and", { "in_top_k", 2, { "field", "quality_hint" } }, { "tier_eq", "partner" } },
+        { "field", "quality_hint" }, { "argmax" }, { "id" },
+        { "always", { action = "next_candidate" } },
+    })
+    local pop = { cand({ quality_hint = 0.5 }),                                  -- p1: 3rd → out
+                  cand({ provider_id = "p2", quality_hint = 0.9 }),              -- p2: 1st → in
+                  cand({ provider_id = "p3", quality_hint = 0.7 }) }            -- p3: 2nd → in
+    local plan = pol.plan(pop, ctx())
+    t.eq(#plan.ordered, 2, "only the top-2 by quality survive the membership filter")
+    t.eq(plan.ordered[1].candidate.provider_id, "p2")
+    t.eq(plan.ordered[2].candidate.provider_id, "p3")
+    local out = {}
+    for _, r in ipairs(plan.rejected) do out[r.provider] = r.reason end
+    t.eq(out.p1, "in_top_k", "the below-top-k candidate is rejected with the membership reason")
+
+    -- the intersection of two independent top-k sets (top-2 by quality AND
+    -- top-2 by the inverse) — and of two in_top_k, the user's "top5 A ∩ top5 B"
+    local both = ir.compile({ "policy",
+        { "ev_zero" },
+        { "and", { "in_top_k", 2, { "field", "quality_hint" } },
+                 { "in_top_k", 2, { "neg", { "field", "quality_hint" } } } },
+        { "field", "quality_hint" }, { "argmax" }, { "id" },
+        { "always", { action = "next_candidate" } },
+    })
+    -- top-2 high = {p2,p3}; top-2 low = {p1,p3}; intersection = {p3}
+    local pop2 = { cand({ quality_hint = 0.5 }),
+                   cand({ provider_id = "p2", quality_hint = 0.9 }),
+                   cand({ provider_id = "p3", quality_hint = 0.7 }) }
+    local ord = both.plan(pop2, ctx()).ordered
+    t.eq(#ord, 1, "intersection of the two top-2 sets is a single candidate")
+    t.eq(ord[1].candidate.provider_id, "p3")
+end)
+
 t.test("xforms: set_param / inject_seed / clamp_param / jitter / filter_text / when", function()
     local c = ctx({ seed = 7 })
     local x = ev({ "seq",

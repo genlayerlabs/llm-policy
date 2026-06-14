@@ -24,6 +24,15 @@ function P.new(spec)
 
     function pol.plan(candidates, ctx)
         local survivors, rejected = {}, {}
+        -- Expose the input population so population-relative predicates
+        -- (in_top_k) can rank against it; ordinary per-candidate predicates
+        -- ignore it. Work on a shallow copy so the caller's ctx is never
+        -- mutated (the population/memo are internal, never encoded) — term
+        -- identities are unaffected.
+        local c = {}
+        if ctx ~= nil then for k, v in pairs(ctx) do c[k] = v end end
+        c.population = candidates
+        ctx = c
         for _, cand in ipairs(candidates) do
             local ok, why = true, nil
             if pol.filter then ok, why = pol.filter(cand, ctx) end

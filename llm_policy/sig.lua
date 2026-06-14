@@ -63,6 +63,7 @@ S.ops = {
     min_tier      = { out = "Pred", ins = { "Tier" } },
     family_eq     = { out = "Pred", ins = { "Family" } },    -- model-family identity (or-compose for a set)
     has_cap       = { out = "Pred", ins = { "Capability" } },
+    in_top_k      = { out = "Pred", ins = { "Count", "Scorer" } }, -- population-relative: in the best-k by a Scorer
 
     -- Scorer — semimodule over Num; population-relative (normalize) ------
     zero          = { out = "Scorer", ins = {} },

@@ -195,6 +195,38 @@ function I.default_algebra(opts)
             return false, "missing_capability:" .. cap
         end
     end
+    -- in_top_k: the one population-relative predicate. Membership in the best-k
+    -- by `scorer`, ranked exactly like argmax (score desc, input order on ties),
+    -- over ctx.population (the policy's input set, exposed by plan). The top-k
+    -- set is computed once per (ctx, scorer) and memoized. With no population in
+    -- scope (an isolated Pred eval) it passes — membership is undefined alone.
+    alg.in_top_k = function(a)
+        local k, scorer = a[1], a[2]
+        return function(cand, ctx)
+            local pop = ctx and ctx.population
+            if pop == nil then return true end
+            local cache = ctx._in_top_k
+            if cache == nil then cache = {}; ctx._in_top_k = cache end
+            local member = cache[scorer]
+            if member == nil then
+                local scores = scorer(pop, ctx)
+                local idx = {}
+                for i = 1, #pop do idx[i] = i end
+                table.sort(idx, function(x, y)
+                    if scores[x] ~= scores[y] then return scores[x] > scores[y] end
+                    return x < y
+                end)
+                member = {}
+                for rank = 1, #idx do
+                    if rank > k then break end
+                    member[pop[idx[rank]]] = true
+                end
+                cache[scorer] = member
+            end
+            if member[cand] then return true end
+            return false, "in_top_k"
+        end
+    end
 
     -- ---- Scorer (population-relative) -----------------------------------
     alg.zero = function() return function(pop, _ctx)
