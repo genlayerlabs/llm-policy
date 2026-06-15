@@ -77,30 +77,21 @@ t.test("scope_matches keeps global + matching-scope candidates", function()
     t.eq(#kept_own, 3, "agent:1 sees its private candidate")
 end)
 
--- ---- rank: weighted + argmax reproduces today's scoring -------------------
+-- ---- rank: selectors over a scorer ---------------------------------------
+-- (sigma-pol/v2) The composite atom scorers and R.weighted were removed, so
+-- these selector tests build their scorer with R.custom (the closure escape
+-- hatch) reading tier directly — the selectors themselves are unchanged.
 
-t.test("partner-weighted argmax ranks partners over fallback", function()
-    local sel = R.argmax(R.weighted{ partner = 1.0 })
-    local ordered = sel(candidates(), ctx())
-    t.eq(ordered[1].candidate.tier, "partner")
-    t.eq(ordered[3].candidate.tier, "fallback", "fallback last")
-    t.eq(ordered[3].score, 0.0, "fallback scores 0 under pure partner weight")
-end)
-
-t.test("balanced weights reproduce the known cold-start scores", function()
-    local sel = R.argmax(R.weighted{ quality = 0.3, speed = 0.2, cost = 0.2, partner = 0.3 })
-    local ordered = sel(candidates(), ctx())
-    -- partner: 0.3*0.7 + 0.2*0.5 + 0.2*1.0 + 0.3*1.0 = 0.81
-    -- fallback:0.3*0.7 + 0.2*0.5 + 0.2*1.0 + 0.3*0.0 = 0.51
-    t.truthy(math.abs(ordered[1].score - 0.81) < 1e-9, "top score 0.81")
-    t.eq(ordered[3].candidate.provider_id, "p3")
-    t.truthy(math.abs(ordered[3].score - 0.51) < 1e-9, "fallback score 0.51")
-end)
+local function tier_score()
+    return R.custom(function(c)
+        return ({ partner = 1.0, marketplace = 0.5, fallback = 0.0 })[c.tier or "fallback"] or 0
+    end)
+end
 
 t.test("open breaker gates score to 0 (still listed, last)", function()
     local c = ctx()
     c.state.breakers.p1 = true
-    local sel = R.argmax(R.weighted{ partner = 1.0 })
+    local sel = R.argmax(tier_score())
     local ordered = sel(candidates(), c)
     -- p1 (partner) is gated to 0, so it falls to the bottom alongside p3.
     t.eq(ordered[#ordered].score, 0.0)
@@ -112,7 +103,7 @@ end)
 -- ---- selector + seed: convergence vs divergence ---------------------------
 
 t.test("softmax_sample is reproducible for a fixed seed", function()
-    local sel = R.softmax_sample(R.weighted{ partner = 1.0 }, { temp = 0.5 })
+    local sel = R.softmax_sample(tier_score(), { temp = 0.5 })
     local a = sel(candidates(), ctx({ seed = 42 }))
     local b = sel(candidates(), ctx({ seed = 42 }))
     for i = 1, #a do
@@ -123,9 +114,9 @@ end)
 
 t.test("seed drives divergence from argmax", function()
     -- two partners tie at the top; argmax (stable) always puts p1 first.
-    local amax = R.argmax(R.weighted{ partner = 1.0 })(candidates(), ctx())
+    local amax = R.argmax(tier_score())(candidates(), ctx())
     t.eq(amax[1].candidate.provider_id, "p1")
-    local sel = R.softmax_sample(R.weighted{ partner = 1.0 }, { temp = 0.5 })
+    local sel = R.softmax_sample(tier_score(), { temp = 0.5 })
     local diverged = false
     for seed = 1, 30 do
         if sel(candidates(), ctx({ seed = seed }))[1].candidate.provider_id ~= "p1" then

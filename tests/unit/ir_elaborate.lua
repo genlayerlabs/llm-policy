@@ -28,11 +28,18 @@ t.test("filter atoms lower to field observations", function()
         "bare list = all_of; singleton tier_in collapses")
 end)
 
-t.test("weights lower to add/scale; retry tables to FailPlan", function()
-    t.eq(enc(E.scorer({ quality = 0.3, cost = 0.7 })),
-         enc({ "add", { "scale", 0.7, { "cost" } }, { "scale", 0.3, { "quality" } } }))
-    t.eq(enc(E.scorer({ quality = 1.0 })), enc({ "quality" }),
-        "unit weight collapses to the bare atom")
+t.test("profile.scorer passes through (else zero); retry tables to FailPlan", function()
+    -- (sigma-pol/v2) weighted scoring was removed; a profile carries an explicit
+    -- raw IR Scorer term in `profile.scorer`, defaulting to zero (no scoring).
+    local prof = { filter = { "requirements", { tier_in = { "partner" } } } }
+    local zeroed = E.profile(prof, {})
+    t.eq(T.check(zeroed), "Policy", "valid policy term with no scorer")
+    t.contains(enc(zeroed), "zero", "absent profile.scorer → zero scorer")
+
+    prof.scorer = { "field", "quality_hint" }
+    local scored = E.profile(prof, {})
+    t.eq(T.check(scored), "Policy")
+    t.contains(enc(scored), "quality_hint", "explicit profile.scorer lowers into the term")
 
     local fp = E.failplan({
         rate_limit = { action = "next_candidate", open_breaker_ms = 30000 },
@@ -69,7 +76,7 @@ local function config()
         },
         profiles = {
             hardened = {
-                weights = { quality = 1.0 },
+                scorer  = { "field", "quality_hint" },
                 filter  = { "requirements", { tier_in = { "partner", "marketplace" } } },
                 mutate  = { { filter_text = { "NFKC" } }, { jitter = { temperature = 0.5 } } },
                 retry_policy = "balanced",

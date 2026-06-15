@@ -1,7 +1,7 @@
--- Golden-vector generator for sigma-pol/v1 conformance.
+-- Golden-vector generator for sigma-pol/v2 conformance.
 --
 -- Builds the vector inputs, computes every expectation with the REFERENCE
--- implementation (this repo), and writes tests/golden/sigma_pol_v1.json.
+-- implementation (this repo), and writes tests/golden/sigma_pol_v2.json.
 -- The vectors are the executable spec: a host implementing Σ_pol in any
 -- language replays the same JSON and must reproduce encoding, fingerprint,
 -- and decisions bit-for-bit (scores within 1e-12).
@@ -17,7 +17,7 @@ local json = require("_json")
 
 local T = ir.term
 
-local OUT = "tests/golden/sigma_pol_v1.json"
+local OUT = "tests/golden/sigma_pol_v2.json"
 
 -- ---- shared fixtures ---------------------------------------------------------
 
@@ -118,7 +118,7 @@ add{ name = "policy-argmax-gate", kind = "policy",
          { "min_tier", "marketplace" },
          { "gate", { "not", { "is", "breaker_open" } },
            { "add", { "scale", 0.6, { "field", "quality_hint" } },
-                    { "scale", 0.4, { "quality" } } } },
+                    { "scale", 0.4, { "neg", { "normalize", { "field", "price_in" } } } } } },
          { "argmax" }, { "id" },
          { "always", { action = "next_candidate" } } },
      candidates = POP, ctx = CTX }

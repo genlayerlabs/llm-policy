@@ -28,7 +28,6 @@ local SIG      = require("llm_policy.sig")
 local fieldsm  = require("llm_policy.fields")
 local util     = require("llm_policy.util")
 local F        = require("llm_policy.filter")
-local R        = require("llm_policy.rank")
 local Mut      = require("llm_policy.mutate")
 local Policy   = require("llm_policy.policy")
 
@@ -281,11 +280,8 @@ function I.default_algebra(opts)
             return out, empty_breakdowns(#pop)
         end
     end
-    alg.quality     = function() return lift(R.quality(), "quality") end
-    alg.speed       = function() return lift(R.speed(), "speed") end
-    alg.cost        = function() return lift(R.cost(), "cost") end
-    alg.free_credit = function() return lift(R.free(), "free_credit") end
-    alg.partner     = function() return lift(R.partner_tier(), "partner") end
+    -- (sigma-pol/v2) composite scorer atoms quality/speed/cost/partner/
+    -- free_credit removed — score on raw fields via `field(...)` instead.
 
     -- ---- Selector -------------------------------------------------------
     -- carrier: fn(scored, ctx) -> ordered scored; entries { candidate, score,

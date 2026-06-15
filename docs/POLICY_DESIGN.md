@@ -206,12 +206,12 @@ ordered candidate list — and is where entropy enters.
 ```lua
 local R = require("llm_policy.rank")
 
--- atom scorers (today's hardcoded dims, now standard library)
-R.quality()  R.speed()  R.cost()  R.partner_tier()  R.free_credit()
-
--- combinators -> a scorer
-R.weighted{ quality = 0.3, speed = 0.2, cost = 0.2, partner = 0.3 }
-R.custom(fn(c, ctx) ... end)        -- pure escape hatch
+-- (sigma-pol/v2) the composite atom scorers (quality/speed/cost/partner/
+-- free_credit) and the R.weighted{...} combinator over them were REMOVED:
+-- they folded raw fields + request knobs into one opaque, host-tuned number.
+-- Score on the RAW fields instead — in the IR with field(...)/normalize/neg/
+-- scale/add (SIGMA-POL.md §5.1), or here with the closure escape hatch:
+R.custom(fn(c, ctx) ... end)        -- pure escape hatch (local-only, no identity)
 
 -- selectors: scorer -> ordered list.  The convergence<->divergence axis.
 R.argmax(scorer)                              -- deterministic (subzero)
@@ -289,7 +289,7 @@ A policy binds the four verbs:
 ```lua
 local policy = Policy{
   filter   = F.all_of{ F.not_disabled(), F.breaker_closed(), F.requirements(), F.scope_matches() },
-  select   = R.argmax(R.weighted{ quality = 0.3, speed = 0.2, cost = 0.2, partner = 0.3 }),
+  select   = R.argmax(R.custom(score_fields)),  -- v2: score raw fields, no composite atoms
   mutate   = M.identity,
   sequence = balanced,
 }
@@ -324,7 +324,7 @@ closure-compile path — local-only, no identity. See SIGMA-POL.md §6.
 -- subzero: CONVERGE (best available, cascade on failure)
 Policy{
   filter   = F.all_of{ F.not_disabled(), F.breaker_closed(), F.requirements() },
-  select   = R.argmax(R.weighted{ quality = 0.55, speed = 0.15, cost = 0.05, partner = 0.25 }),
+  select   = R.argmax(R.custom(score_fields)),  -- v2: raw fields (price/latency/quality_hint)
   mutate   = M.identity,                 -- converge => don't perturb
   sequence = balanced,
 }   -- ctx.seed = nil
@@ -332,7 +332,7 @@ Policy{
 -- greybox: DIVERGE (attack defense; reproducible per node and per attempt)
 Policy{
   filter   = F.all_of{ F.requirements(), F.tier_in{ "partner", "tee" } },   -- trusted only
-  select   = R.softmax_sample(R.weighted{ quality = 0.7, cost = 0.3 }, { temp = 0.5 }),
+  select   = R.softmax_sample(R.custom(score_fields), { temp = 0.5 }),
                                          -- closure form; the wire/normative seeded
                                          -- selector is the IR `sample` (SIGMA-POL §5.3)
   mutate   = M.pipe{
@@ -389,7 +389,8 @@ the **subzero LLM host** (off-chain interpreter + credentials + agent layer).
 
 Not a rewrite — an exposure:
 
-- `score_candidate` (weighted sum) → `R.weighted` in the standard library.
+- `score_candidate` (weighted sum) → field-based IR scorers (`field`/`normalize`/
+  `neg`/`scale`/`add`); the v1 `R.weighted` over composite atoms was removed in v2.
 - `candidate_passes` → `F.*` atoms.
 - `build_candidate_matrix` → still builds the static set, but `plan` now ranks
   over `catalog ∪ ctx.request.extra_candidates` (one validator, one schema).

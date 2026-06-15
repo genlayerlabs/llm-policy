@@ -1,9 +1,14 @@
 # Σ_pol — the policy IR
 
-Normative spec for `sigma-pol/v1`: the term language policies are written in,
+Normative spec for `sigma-pol/v2`: the term language policies are written in,
 its canonical encoding, and the reference semantics. A policy in this form is
 **data** — serializable, hashable, admissible from untrusted callers — and any
 conforming interpreter, in any language, computes the same decision from it.
+
+> **v2** drops the five composite scorer atoms (`quality`/`speed`/`cost`/
+> `partner`/`free_credit`) that v1 carried; score on the raw observation fields
+> instead (§5.2). Removing operations is a major bump (§1.1), so every v1
+> policy fingerprint rotates under v2.
 
 The mathematical development (multi-sorted signature, term algebra,
 initiality) lives outside this repo; this document pins the engineering
@@ -69,8 +74,8 @@ A complete policy:
   { "and", { "meets_req" },                               -- Pred
            { "not", { "is", "breaker_open" } },
            { "cmp", "price_out", "le", 25 } },
-  { "add", { "scale", 0.7, { "cost" } },                  -- Scorer
-           { "scale", 0.3, { "quality" } } },
+  { "add", { "scale", 0.7, { "neg", { "normalize", { "field", "price_in" } } } },  -- Scorer
+           { "scale", 0.3, { "field", "quality_hint" } } },
   { "argmax" },                                           -- Selector
   { "seq", { "filter_text", { "NFKC" } },                 -- Xform
            { "clamp_param", "temperature", 0, 1 } },
@@ -112,7 +117,8 @@ through the Num/Bool field schema — they carry no numeric default and need no
 declaration. `family_eq` is the single-family identity test; a *set* of
 families is the algebra's `or` of `family_eq` (the `family_in` surface sugar
 lowers to exactly that), so "the cheapest among {A, B, C}" is
-`or(family_eq A, family_eq B, family_eq C)` as the filter with a `cost` scorer.
+`or(family_eq A, family_eq B, family_eq C)` as the filter with a
+`neg(normalize(field("price_in")))` scorer.
 
 ### 3.1 Population-relative selection lives in the data, not the ops
 
@@ -126,8 +132,8 @@ algebra then observes it with the ordinary per-candidate `cmp`:
 - "top 5 by A" is `cmp("bench_a_rank", "le", 5)` — a plain, local Pred.
 - The **intersection of independent shortlists** is just their `and`:
   `and(cmp("bench_a_rank","le",5), cmp("bench_b_rank","le",5),
-  tier_eq("partner"), cmp("price_in","le",X))`, then ranked by a `cost`
-  scorer for "the cheapest of the survivors".
+  tier_eq("partner"), cmp("price_in","le",X))`, then ranked by a
+  `neg(normalize(field("price_in")))` scorer for "the cheapest of the survivors".
 
 This is deliberate. A predicate that ranked the *live* population itself would
 be the algebra's only non-local Pred: its verdict on a candidate would depend
@@ -240,28 +246,26 @@ In evaluation order — the first failure is the rejection reason:
 8. `min_tok_s`: the state EMA `ema_tok_s` is absent **or** `< min_tok_s` →
    `min_tok_s` (no observation fails closed).
 
-### 5.2 Named scorers — exact semantics
+### 5.2 Named scorers — REMOVED in v2
 
-Each named scorer is the pointwise lift of a pinned formula (reference:
-`rank.lua`); `m` is the state EMA entry for (provider, family); all results
-clamp to [0,1] where noted. The request-side knobs (`max_latency_ms`,
-`max_cost_usd`, `estimated_*_tokens`) live in `ctx.request.requirements`
-with the defaults below — they are part of this spec, not implementation
-detail:
+v1 carried five composite scorer atoms (`quality`, `speed`, `cost`,
+`free_credit`, `partner`) — pointwise lifts of pinned formulas that folded raw
+fields and request-side knobs (`max_latency_ms`, `max_cost_usd`,
+`estimated_*_tokens`) into one number with baked-in defaults. **They were
+removed in `sigma-pol/v2`** (their removal is the v1→v2 bump, §1.1): a composite
+that hides which fields it reads and bakes host-chosen targets into the language
+is not an observable, and made the same term score differently depending on
+those defaults.
 
-| scorer | formula |
-|---|---|
-| `quality` | clamp(`m.last_quality_eval`, else `quality_hint`, else **0.5**) |
-| `speed` | `m.ema_latency_ms` absent → **0.5**; else clamp(1 − latency/`max_latency_ms` (default **5000**)) |
-| `cost` | cost_usd = (`m.price_in`·`estimated_input_tokens` (default **1000**) + `m.price_out`·`estimated_output_tokens` (default **500**))/10⁶, missing prices read **0**; cost ≤ 0 → **1.0**; else clamp(1 − cost/`max_cost_usd` (default **0.01**)) |
-| `free_credit` | `state.credits[provider]` ≥ `state.free_credit_threshold_usd` (default **1.0**) → 1.0 else 0.0 |
-| `partner` | tier map: partner **1.0**, marketplace **0.5**, fallback/other **0.0** |
+Score on the **raw fields** instead, explicitly:
 
-Note the asymmetry, kept deliberately for v1: `cost` reads **only** the EMA
-(missing → 0 → score 1.0, "free until observed"), while the `price_in`/
-`price_out` **fields** default to +inf (missing fails a ceiling). Heuristic
-scoring is optimistic; admission gates are conservative. Use `cmp` ceilings,
-not the `cost` scorer, to enforce spend limits.
+- "cheaper is better" — `neg(normalize(field("price_in")))` (or `price_out`).
+- "faster is better" — `neg(normalize(field("latency_ms")))`.
+- "higher quality" — `field("quality_hint")` (or the composed `quality` field).
+- spend limits — a hard `cmp("price_out","le",X)` ceiling in the filter, never a
+  scorer (a scorer ranks softly; only `cmp` gates). Recall the `price_in/out`
+  fields default to **+inf**, so a missing price fails a ceiling — conservative
+  by design (§3).
 
 ### 5.3 `sample` — exact semantics
 

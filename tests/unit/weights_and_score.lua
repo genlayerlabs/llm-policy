@@ -57,35 +57,12 @@ local function fresh_init(metrics)
     assert(router.init(config, metrics))
 end
 
-t.test("seeded last_quality_eval drives R.quality instead of the static hint", function()
-    -- seed_runtime_from_metrics dropped this field, so R.quality always fell
-    -- back to the static hint and bench evals never influenced ranking.
-    fresh_init({ models = { ["m1@p1"] = { last_quality_eval = 0.95 } } })
-    local ranked, err = r.rank_candidates({ profile = "qonly" }, 0)
-    t.falsy(err)
-    t.eq(ranked[1].candidate.provider_id, "p1", "evaluated provider ranks first")
-    t.near(ranked[1].score, 0.95, 1e-9, "score uses the seeded eval")
-    t.near(ranked[2].score, 0.8,  1e-9, "unseeded candidate keeps the hint")
-end)
-
-t.test("quality-only weights produce score == quality_hint", function()
-    fresh_init()
-    local ranked, err = r.rank_candidates({ profile = "qonly" }, 0)
-    t.falsy(err)
-    t.eq(#ranked, 2, "two candidates")
-    for _, r1 in ipairs(ranked) do
-        t.near(r1.score, 0.8, 1e-9, "score equals quality_hint")
-    end
-end)
-
-t.test("partner_only weights rank partner above marketplace", function()
-    fresh_init()
-    local ranked = r.rank_candidates({ profile = "partner_only" }, 0)
-    t.eq(ranked[1].candidate.provider_id, "p1", "partner first")
-    t.eq(ranked[2].candidate.provider_id, "p2", "marketplace second")
-    t.near(ranked[1].score, 1.0, 1e-9)
-    t.near(ranked[2].score, 0.5, 1e-9)
-end)
+-- (sigma-pol/v2) The composite scorer atoms quality/speed/cost/partner/
+-- free_credit were removed, so weighted profiles no longer produce a ranking
+-- score (the `weights` map is inert — score on raw fields via a `policy_ir`
+-- scorer instead). The score-value assertions that exercised those atoms are
+-- gone; the generic weight-merging math (renormalize/merge) and the breaker
+-- demotion are unaffected and still covered below.
 
 t.test("open circuit breaker forces score to 0", function()
     fresh_init()

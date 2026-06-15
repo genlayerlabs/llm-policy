@@ -100,7 +100,7 @@ docs/
   SIGMA-POL.md             -- the policy IR: terms, encoding, hashing, reference semantics
   GENVM-LLM-POLICY.md      -- using llm_policy as a node's greyboxing algebra
 example_host/              -- the minimal embedding reference (~80 lines, mock provider)
-tests/                     -- Lua unit tests (run_lua.lua, unit/, smoke_rank.lua)
+tests/                     -- Lua unit tests (run_lua.lua, unit/, golden/)
   golden/                  -- sigma_pol_v1.json conformance vectors + generator
 genvm/                     -- on-chain greybox adapter overlay (dispatch.lua + integrate.sh); tests/
 ```

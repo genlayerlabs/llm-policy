@@ -248,7 +248,7 @@ t.test("ir.compile: full pipeline, fingerprint, Policy-sort enforcement", functi
     local pol = ir.compile({ "policy",
         { "ev_zero" },
         { "and", { "not", { "is", "disabled" } }, { "min_tier", "partner" } },
-        { "add", { "scale", 1, { "quality" } } },
+        { "add", { "scale", 1, { "field", "quality_hint" } } },
         { "argmax" }, { "id" },
         { "always", { action = "next_candidate" } },
     })
@@ -279,7 +279,7 @@ local function router_config()
             m1 = { served_by = { { provider = "p1" }, { provider = "p2" } },
                    capabilities = { context = 8000 }, static_quality_hint = 0.7 },
         },
-        profiles = { default = { weights = { quality = 1.0 } } },
+        profiles = { default = { scorer = { "field", "quality_hint" } } },
         fields = { region_score = { sort = "Num", default = 0 } },   -- declared extension
     }
 end
@@ -367,8 +367,10 @@ t.test("declarative profiles now compile through the IR (fingerprint in trace)",
     t.truthy(res.trace.policy_term and res.trace.policy_term[1] == "policy",
         "and its normal-form term — the data a host can surface/copy/commit")
 
-    local bd = router.rank({ profile = "default" })[1].score_breakdown
-    t.truthy(bd.quality ~= nil, "named-atom breakdown preserved through the IR")
+    -- (sigma-pol/v2) the profile scores on a raw field now, not a composite
+    -- atom; the ranking just has to come out scored and ordered.
+    local ranked = router.rank({ profile = "default" })
+    t.truthy(ranked[1] and ranked[1].score ~= nil, "profile ranks through the IR")
 end)
 
 t.test("config.policy_envelope: callers narrow, never widen", function()
@@ -392,7 +394,7 @@ t.test("config.policy_envelope: callers narrow, never widen", function()
     t.eq(ranked[1].candidate.provider_id, "p1")
 
     local bad = { providers = cfg.providers, models = cfg.models,
-                  profiles = cfg.profiles, policy_envelope = { "quality" } }
+                  profiles = cfg.profiles, policy_envelope = { "zero" } }  -- Scorer, not a Pred
     r.reset()
     local ok, err = router.init(bad)
     t.falsy(ok, "non-Pred envelope rejected at init")

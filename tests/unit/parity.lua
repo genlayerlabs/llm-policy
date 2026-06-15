@@ -60,14 +60,10 @@ t.test("argmax default is deterministic across calls", function()
              "identical inputs => identical order")
 end)
 
-t.test("argmax default reproduces partner-over-fallback ranking (pre-R2 parity)", function()
-    fresh()
-    local ranked = router.rank({ profile = "default" })
-    t.eq(ranked[1].candidate.tier, "partner")
-    t.eq(ranked[#ranked].candidate.tier, "fallback")
-    t.near(ranked[1].score, 1.0, 1e-9)
-    t.near(ranked[#ranked].score, 0.0, 1e-9)
-end)
+-- (sigma-pol/v2) The "partner-over-fallback" score parity test was removed
+-- with the partner atom: weighted profiles no longer score, so there is no
+-- tier-based default ranking to reproduce. Determinism, seeded divergence and
+-- the chain selector below are unaffected.
 
 -- ---- seeded divergence is reproducible ------------------------------------
 
