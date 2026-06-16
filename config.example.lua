@@ -168,40 +168,43 @@ return {
     -- ============================================================
     -- Profiles
     -- ============================================================
-    -- These are TEMPLATES. Edit weights and constraints to taste; the library
+    -- These are TEMPLATES. Edit the scorer and constraints to taste; the library
     -- ships no built-in defaults. Two operators starting from the same template
     -- are encouraged to diverge — diversity is a feature (see docs/GENVM-LLM-POLICY.md).
+    --
+    -- (sigma-pol/v2) The composite scorer atoms (quality/speed/cost/partner/
+    -- free_credit) were removed: a profile now carries an explicit `scorer` —
+    -- a raw Σ_pol Scorer term over the RAW fields (field/normalize/neg/scale/
+    -- add). `neg(normalize(field("price_in")))` means "cheaper scores higher".
+    -- Tier preference is a filter concern now (min_tier), not a scorer atom.
     profiles = {
 
         default = {
-            weights = {
-                quality     = 0.35,
-                speed       = 0.20,
-                cost        = 0.30,
-                free_credit = 0.05,
-                partner     = 0.10,
+            scorer = { "add",
+                { "scale", 0.40, { "field", "context" } },
+                { "scale", 0.25, { "neg", { "normalize", { "field", "latency_ms" } } } },
+                { "scale", 0.35, { "neg", { "normalize", { "field", "price_in" } } } },
             },
             retry_policy = "balanced",
         },
 
         cheap_explore = {
             extends = "default",
-            weights = {
-                quality     = 0.10,
-                speed       = 0.15,
-                cost        = 0.60,
-                free_credit = 0.15,
-                partner     = 0,
+            scorer = { "add",
+                { "scale", 0.15, { "field", "context" } },
+                { "scale", 0.15, { "neg", { "normalize", { "field", "latency_ms" } } } },
+                { "scale", 0.55, { "neg", { "normalize", { "field", "price_in" } } } },
+                { "scale", 0.15, { "normalize", { "field", "credits" } } },
             },
         },
 
         tee_only = {
             extends = "default",
             hard_constraints = { privacy = "tee_required" },
-            weights = {
-                quality = 0.50,
-                speed   = 0.20,
-                cost    = 0.30,
+            scorer = { "add",
+                { "scale", 0.50, { "field", "context" } },
+                { "scale", 0.20, { "neg", { "normalize", { "field", "latency_ms" } } } },
+                { "scale", 0.30, { "neg", { "normalize", { "field", "price_in" } } } },
             },
         },
 
@@ -210,11 +213,10 @@ return {
             -- Note: `needs` here is a hard constraint that the profile adds on top of
             -- what the contract declares. Future work: per-profile capability filters
             -- (the current schema folds these into the contract instead).
-            weights = {
-                quality = 0.45,
-                speed   = 0.20,
-                cost    = 0.25,
-                partner = 0.10,
+            scorer = { "add",
+                { "scale", 0.50, { "field", "context" } },
+                { "scale", 0.20, { "neg", { "normalize", { "field", "latency_ms" } } } },
+                { "scale", 0.30, { "neg", { "normalize", { "field", "price_in" } } } },
             },
         },
     },
@@ -261,7 +263,7 @@ return {
     -- customs = { my_xform = function(req, cand, ctx) ... return req end },
 
     -- A profile may also pin a full IR policy directly:
-    -- profiles.pinned = { policy_ir = { "policy", { "ev_zero" }, ... } }
+    -- profiles.pinned = { policy_ir = { "policy", ... } }
 
     -- ============================================================
     -- Defaults overrides (optional)

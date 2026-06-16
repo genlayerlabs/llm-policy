@@ -13,7 +13,6 @@ local function enc(x) return T.encode(T.normalize(x)) end
 t.test("filter atoms lower to field observations", function()
     t.eq(enc(E.filter("not_disabled")), enc({ "not", { "is", "disabled" } }))
     t.eq(enc(E.filter("breaker_closed")), enc({ "not", { "is", "breaker_open" } }))
-    t.eq(enc(E.filter({ quality_min = 0.8 })), enc({ "cmp", "quality_hint", "ge", 0.8 }))
     t.eq(enc(E.filter({ price_max = { input = 5, output = 25 } })),
          enc({ "and", { "cmp", "price_in", "le", 5 }, { "cmp", "price_out", "le", 25 } }))
     t.eq(enc(E.filter({ tier_in = { "partner", "tee" } })),
@@ -28,11 +27,18 @@ t.test("filter atoms lower to field observations", function()
         "bare list = all_of; singleton tier_in collapses")
 end)
 
-t.test("weights lower to add/scale; retry tables to FailPlan", function()
-    t.eq(enc(E.scorer({ quality = 0.3, cost = 0.7 })),
-         enc({ "add", { "scale", 0.7, { "cost" } }, { "scale", 0.3, { "quality" } } }))
-    t.eq(enc(E.scorer({ quality = 1.0 })), enc({ "quality" }),
-        "unit weight collapses to the bare atom")
+t.test("profile.scorer passes through (else zero); retry tables to FailPlan", function()
+    -- (sigma-pol/v2) weighted scoring was removed; a profile carries an explicit
+    -- raw IR Scorer term in `profile.scorer`, defaulting to zero (no scoring).
+    local prof = { filter = { "requirements", { tier_in = { "partner" } } } }
+    local zeroed = E.profile(prof, {})
+    t.eq(T.check(zeroed), "Policy", "valid policy term with no scorer")
+    t.contains(enc(zeroed), "zero", "absent profile.scorer → zero scorer")
+
+    prof.scorer = { "field", "context" }
+    local scored = E.profile(prof, {})
+    t.eq(T.check(scored), "Policy")
+    t.contains(enc(scored), "context", "explicit profile.scorer lowers into the term")
 
     local fp = E.failplan({
         rate_limit = { action = "next_candidate", open_breaker_ms = 30000 },
@@ -69,7 +75,7 @@ local function config()
         },
         profiles = {
             hardened = {
-                weights = { quality = 1.0 },
+                scorer  = { "field", "context" },
                 filter  = { "requirements", { tier_in = { "partner", "marketplace" } } },
                 mutate  = { { filter_text = { "NFKC" } }, { jitter = { temperature = 0.5 } } },
                 retry_policy = "balanced",
@@ -91,14 +97,13 @@ end
 
 t.test("engine elaboration of a profile ranks like the hand-elaborated term", function()
     -- Both arms lower through elaborate (the declarative vocabulary has one
-    -- compiler); this pins the ENGINE's wiring — merged weights, retry table,
+    -- compiler); this pins the ENGINE's wiring — retry table,
     -- schema — against a from-scratch elaboration of the same profile.
     fresh()
     local legacy = router.rank({ profile = "hardened" })
 
     local profile = r.catalog().profiles.hardened
     local term = E.profile(profile, {
-        weights     = r.merged_weights(profile, {}),
         retry_table = r.catalog().retry.balanced,
     })
     fresh()
@@ -119,7 +124,6 @@ t.test("engine-wired mutate behaves like the hand-elaborated one (directive + se
 
     local profile = r.catalog().profiles.hardened
     local term = E.profile(profile, {
-        weights     = r.merged_weights(profile, {}),
         retry_table = r.catalog().retry.balanced,
     })
     router.execute({ policy_ir = term, prompt = "hi", temperature = 0.7, seed = 42 })
@@ -130,8 +134,8 @@ end)
 t.test("pinned divergence: a candidate with no price fails an IR price ceiling", function()
     fresh()
     local ranked = router.rank({ policy_ir = { "policy",
-        { "ev_zero" }, { "cmp", "price_in", "le", 5 },
-        { "field", "quality_hint" }, { "argmax" }, { "id" },
+        { "cmp", "price_in", "le", 5 },
+        { "field", "context" }, { "argmax" }, { "id" },
         { "always", { action = "next_candidate" } },
     } })
     t.eq(#ranked, 0, "missing price defaults to +inf: conservative, unlike the legacy gate")

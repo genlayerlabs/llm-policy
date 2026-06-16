@@ -1,11 +1,12 @@
 -- llm_policy.elaborate — surface syntax -> Σ_pol terms.
 --
--- The declarative profile format (filter/mutate specs, weights, selector,
+-- The declarative profile format (filter/mutate specs, scorer term, selector,
 -- retry tables) is sugar; this module desugars it into IR terms so existing
 -- configs gain canonical form + hash without being rewritten. n-ary sugar
--- (all_of, weighted, pipe) lowers to the signature's variadic/binary ops;
--- legacy named atoms lower to field observations (not_disabled ->
--- not(is("disabled")), price/quality gates -> cmp).
+-- (all_of, pipe) lowers to the signature's variadic/binary ops; legacy named
+-- atoms lower to field observations (not_disabled -> not(is("disabled")),
+-- price gates -> cmp). (sigma-pol/v2: `weighted` sugar removed with the
+-- composite atoms — a profile carries an explicit `scorer` term.)
 --
 -- Maps are lowered in sorted key order so elaboration is deterministic
 -- (pairs() order is not). Note one pinned divergence: cmp observes through the
@@ -65,8 +66,9 @@ function E.filter(spec)
             for _, f in ipairs(spec.family_in) do out[#out + 1] = { "family_eq", f } end
             return #out == 2 and out[2] or out
         end
-        if spec.quality_min then return { "cmp", "quality_hint", "ge", spec.quality_min } end
-        if spec.quality_max then return { "cmp", "quality_hint", "lt", spec.quality_max } end
+        -- (sigma-pol/v2) quality_min/quality_max removed with the `quality`
+        -- field: it denoted no observable (hand-assigned hint / uncomputed eval).
+        -- Gate on a real field instead (e.g. price/latency/context).
         if spec.price_max then
             local out = { "and" }
             if spec.price_max.input then
@@ -86,25 +88,14 @@ function E.filter(spec)
     error("elaborate: invalid filter spec")
 end
 
--- ---- weights -> Scorer term -------------------------------------------------
-
-local WEIGHT_ATOM = {
-    quality = "quality", speed = "speed", cost = "cost",
-    free_credit = "free_credit", partner = "partner",
-}
-
-function E.scorer(weights)
-    local out = { "add" }
-    for _, name in ipairs(sorted_keys(weights or {})) do
-        local w = weights[name]
-        local atom = WEIGHT_ATOM[name]
-        if atom and type(w) == "number" then
-            out[#out + 1] = { "scale", w, { atom } }
-        end
-    end
-    if #out == 1 then return { "zero" } end
-    return out
-end
+-- ---- scorer ------------------------------------------------------------------
+--
+-- (sigma-pol/v2) The `weights -> Scorer` lowering was REMOVED with the composite
+-- scorer atoms (quality/speed/cost/free_credit/partner) it mapped to: weighted
+-- scoring over those baked-in heuristics is gone. A profile now carries its
+-- ranking as an explicit raw IR Scorer term in `profile.scorer` (built from
+-- `field(...)`/normalize/neg/scale/add); absent, it does not score (filter +
+-- argmax). Authors who want a custom ranking send a per-call `policy_ir`.
 
 -- ---- selector ----------------------------------------------------------------
 
@@ -186,7 +177,8 @@ function E.failplan(retry_table)
 end
 
 -- ---- full profile -> Policy term --------------------------------------------------
--- weights must already be merged/renormalized; retry_table already resolved.
+-- retry_table already resolved. The scorer is an explicit raw IR Scorer term
+-- (`opts.scorer` or `profile.scorer`), defaulting to `zero` — no scoring.
 --
 -- The scorer is wrapped in gate(not(is("breaker_open")), ·): the legacy
 -- selectors zeroed breaker-open candidates silently inside score_all; the IR
@@ -196,10 +188,9 @@ end
 function E.profile(profile, opts)
     opts = opts or {}
     return { "policy",
-        { "ev_zero" },
         E.filter(profile.filter),
         { "gate", { "not", { "is", "breaker_open" } },
-          E.scorer(opts.weights or profile.weights) },
+          opts.scorer or profile.scorer or { "zero" } },
         E.selector(profile, opts.contract),
         E.mutate(profile.mutate),
         E.failplan(opts.retry_table),

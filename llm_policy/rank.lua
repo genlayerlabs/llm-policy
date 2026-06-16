@@ -20,98 +20,18 @@
 --   ctx.seed                             = integer | nil
 
 local util   = require("llm_policy.util")
-local clamp  = util.clamp
-local pm_key = util.pm_key
 
 local R = {}
 
--- ---- atom scorers (the standard library; today's hardcoded dims) ----------
-
-function R.quality()
-    return function(cand, ctx)
-        local m = ctx.state.ema[pm_key(cand.provider_id, cand.model_family)]
-        local q = (m and m.last_quality_eval) or cand.quality_hint or 0.5
-        return clamp(q, 0, 1)
-    end
-end
-
-function R.speed()
-    return function(cand, ctx)
-        local req = ctx.request.requirements or {}
-        local target = req.max_latency_ms or 5000
-        local m = ctx.state.ema[pm_key(cand.provider_id, cand.model_family)]
-        local lat = m and m.ema_latency_ms
-        if lat == nil then return 0.5 end
-        return clamp(1 - (lat / target), 0, 1)
-    end
-end
-
-function R.cost()
-    return function(cand, ctx)
-        local req = ctx.request.requirements or {}
-        local m = ctx.state.ema[pm_key(cand.provider_id, cand.model_family)]
-        local price_in  = (m and m.price_in)  or 0
-        local price_out = (m and m.price_out) or 0
-        local in_toks  = req.estimated_input_tokens  or 1000
-        local out_toks = req.estimated_output_tokens or 500
-        local cost_usd = (price_in * in_toks + price_out * out_toks) / 1e6
-        if cost_usd <= 0 then return 1.0 end
-        local target = req.max_cost_usd or 0.01
-        return clamp(1 - (cost_usd / target), 0, 1)
-    end
-end
-
-function R.free()
-    return function(cand, ctx)
-        local credits = ctx.state.credits or {}
-        local rem = credits[cand.provider_id]
-        local thr = ctx.state.free_credit_threshold_usd or 1.0
-        if rem and rem >= thr then return 1.0 end
-        return 0.0
-    end
-end
-
-local TIER_SCORE = { partner = 1.0, marketplace = 0.5, fallback = 0.0 }
-
-function R.partner_tier()
-    return function(cand, _ctx)
-        return TIER_SCORE[cand.tier or "fallback"] or 0
-    end
-end
-
 -- ---- combinators -> a scorer ----------------------------------------------
-
--- Standard-library atom names, so `weighted{ quality=.., speed=.. }` reads like
--- the old profile weights and reproduces the old weighted sum exactly.
-local ATOMS = {
-    quality     = R.quality,
-    speed       = R.speed,
-    cost        = R.cost,
-    free_credit = R.free,
-    partner     = R.partner_tier,
-}
-
--- weights: { quality=, speed=, cost=, free_credit=, partner= }. Already
--- renormalized by the caller (profile resolution); used as-is here.
-function R.weighted(weights)
-    local terms = {}
-    for name, w in pairs(weights or {}) do
-        local atom = ATOMS[name]
-        if atom and type(w) == "number" then
-            terms[#terms + 1] = { name = name, w = w, f = atom() }
-        end
-    end
-    return function(cand, ctx)
-        local raw, breakdown = 0, {}
-        for _, t in ipairs(terms) do
-            local s = t.f(cand, ctx)
-            breakdown[t.name] = s
-            raw = raw + t.w * s
-        end
-        breakdown.weights = weights   -- preserved for trace/debug (parity with old breakdown)
-        return raw, breakdown
-    end
-end
+--
+-- (sigma-pol/v2) The composite atom scorers (quality/speed/cost/free_credit/
+-- partner) and the `weighted{...}` combinator over them were REMOVED. They
+-- folded raw fields + request knobs (max_cost_usd, max_latency_ms, token
+-- estimates) into one opaque, host-tuned number rather than observing the
+-- candidate directly. Score on the raw fields instead — in the IR with
+-- field(...)/normalize/neg/scale/add, or here with R.custom for the
+-- (local-only, no-identity) closure path.
 
 function R.custom(fn) return fn end
 

@@ -1,4 +1,4 @@
--- Golden conformance vectors: replay tests/golden/sigma_pol_v1.json against
+-- Golden conformance vectors: replay tests/golden/sigma_pol_v2.json against
 -- the reference implementation. A host porting Σ_pol to another language
 -- replays the same file; agreement here + per-op tests = conformance (the
 -- initiality argument, docs/SIGMA-POL.md §7). Regenerate with
@@ -11,7 +11,7 @@ local sequence = require("llm_policy.sequence")
 
 local T = ir.term
 
-local f = assert(io.open("tests/golden/sigma_pol_v1.json", "r"))
+local f = assert(io.open("tests/golden/sigma_pol_v2.json", "r"))
 local doc = json.decode(f:read("a"))
 f:close()
 

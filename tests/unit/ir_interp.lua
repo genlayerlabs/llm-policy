@@ -66,42 +66,53 @@ t.test("family_eq matches the candidate's model family; or builds a set", functi
 end)
 
 t.test("boolean structure: and short-circuits with reason, not inverts", function()
-    local p = ev({ "and", { "tier_eq", "partner" }, { "cmp", "quality_hint", "ge", 0.9 } })
+    local p = ev({ "and", { "tier_eq", "partner" }, { "cmp", "context", "ge", 1e9 } })
     local ok, why = p(cand(), ctx())
-    t.falsy(ok); t.contains(why, "cmp:quality_hint")
+    t.falsy(ok); t.contains(why, "cmp:context")
 
     t.truthy(ev({ "not", { "is", "breaker_open" } })(cand(), ctx()))
 end)
 
 t.test("scorers are population-relative; normalize min-maxes over the pool", function()
-    local pop = { cand({ quality_hint = 0.2 }), cand({ provider_id = "p2", quality_hint = 0.8 }),
-                  cand({ provider_id = "p3", quality_hint = 0.5 }) }
-    local s = ev({ "normalize", { "field", "quality_hint" } })
+    local pop = { cand({ capabilities = { context = 0.2 } }),
+                  cand({ provider_id = "p2", capabilities = { context = 0.8 } }),
+                  cand({ provider_id = "p3", capabilities = { context = 0.5 } }) }
+    local s = ev({ "normalize", { "field", "context" } })
     local v = s(pop, ctx())
     t.near(v[1], 0); t.near(v[2], 1); t.near(v[3], 0.5)
 
-    local sum = ev({ "add", { "scale", 0.5, { "lit", 1 } }, { "field", "quality_hint" } })
+    local sum = ev({ "add", { "scale", 0.5, { "lit", 1 } }, { "field", "context" } })
     t.near(sum(pop, ctx())[2], 1.3, 1e-12, "0.5*1 + 0.8")
 
     local degenerate = s({ pop[1] }, ctx())
     t.near(degenerate[1], 0, 1e-12, "degenerate population pins to 0")
+
+    -- a missing price defaults to +inf; normalize must pin it to 1 (the top),
+    -- never compute inf/inf = NaN (NaN scores are non-finite and break JSON /
+    -- deterministic ordering). p1 has a price in CTX, the others don't.
+    local sp = ev({ "normalize", { "field", "price_in" } })
+    local pv = sp({ cand({ price_in = 2 }), cand({ provider_id = "p2" }),
+                    cand({ provider_id = "p3" }) }, ctx())   -- p2/p3 have no price -> +inf
+    for i = 1, #pv do t.truthy(pv[i] == pv[i], "no NaN at position " .. i) end
+    t.near(pv[1], 0, 1e-12, "the only priced (finite) candidate -> 0")
+    t.near(pv[2], 1, 1e-12, "missing price (+inf) pins to 1")
 end)
 
 t.test("argmax orders by score, stable on ties; sample is seed-reproducible", function()
     local pol = ir.compile({ "policy",
-        { "ev_zero" }, { "top" }, { "field", "quality_hint" }, { "argmax" }, { "id" },
+        { "top" }, { "field", "context" }, { "argmax" }, { "id" },
         { "always", { action = "next_candidate" } },
     })
-    local pop = { cand({ quality_hint = 0.5 }),
-                  cand({ provider_id = "p2", quality_hint = 0.9 }),
-                  cand({ provider_id = "p3", quality_hint = 0.5 }) }
+    local pop = { cand({ capabilities = { context = 0.5 } }),
+                  cand({ provider_id = "p2", capabilities = { context = 0.9 } }),
+                  cand({ provider_id = "p3", capabilities = { context = 0.5 } }) }
     local ordered = pol.plan(pop, ctx()).ordered
     t.eq(ordered[1].candidate.provider_id, "p2")
     t.eq(ordered[2].candidate.provider_id, "p1", "tie keeps input order")
     t.eq(ordered[3].candidate.provider_id, "p3")
 
     local sampler = ir.compile({ "policy",
-        { "ev_zero" }, { "top" }, { "field", "quality_hint" }, { "sample", 0.3 }, { "id" },
+        { "top" }, { "field", "context" }, { "sample", 0.3 }, { "id" },
         { "always", { action = "next_candidate" } },
     })
     local o1 = sampler.plan(pop, ctx({ seed = 42 })).ordered
@@ -113,7 +124,7 @@ t.test("argmax orders by score, stable on ties; sample is seed-reproducible", fu
 
     -- temp = 0 collapses rank-geometric sampling to the argmax order exactly
     local sharp = ir.compile({ "policy",
-        { "ev_zero" }, { "top" }, { "field", "quality_hint" }, { "sample", 0 }, { "id" },
+        { "top" }, { "field", "context" }, { "sample", 0 }, { "id" },
         { "always", { action = "next_candidate" } },
     })
     local so = sharp.plan(pop, ctx({ seed = 99 })).ordered
@@ -137,13 +148,13 @@ end)
 
 t.test("top_k orders by the inner selector and keeps the first k", function()
     local pol = ir.compile({ "policy",
-        { "ev_zero" }, { "top" }, { "field", "quality_hint" },
+        { "top" }, { "field", "context" },
         { "top_k", 2, { "argmax" } }, { "id" },
         { "always", { action = "next_candidate" } },
     })
-    local pop = { cand({ quality_hint = 0.5 }),
-                  cand({ provider_id = "p2", quality_hint = 0.9 }),
-                  cand({ provider_id = "p3", quality_hint = 0.7 }) }
+    local pop = { cand({ capabilities = { context = 0.5 } }),
+                  cand({ provider_id = "p2", capabilities = { context = 0.9 } }),
+                  cand({ provider_id = "p3", capabilities = { context = 0.7 } }) }
     local ordered = pol.plan(pop, ctx()).ordered
     t.eq(#ordered, 2, "shortlist capped to k=2")
     t.eq(ordered[1].candidate.provider_id, "p2", "best first (inner argmax)")
@@ -163,7 +174,6 @@ t.test("shortlist intersection = and() of cmp over host-computed rank fields (§
         bench_b_rank = { sort = "Num", default = 1e9 },
     } }
     local pol = ir.compile({ "policy",
-        { "ev_zero" },
         { "and", { "cmp", "bench_a_rank", "le", 2 },
                  { "cmp", "bench_b_rank", "le", 2 },
                  { "tier_eq", "partner" },
@@ -235,20 +245,11 @@ t.test("failplan evaluates to a retry table the engine understands", function()
     t.eq(seq.classify(fp, "anything_else").action, "next_candidate", "base is the unknown fallback")
 end)
 
-t.test("evidence: from_prov('self') reads own quality state", function()
-    local e = ev({ "from_prov", "self" })
-    local c = ctx()
-    t.near(e(cand(), c), 0.7, 1e-12, "falls back to quality_hint")
-    c.state.ema["p1|m1"] = { last_quality_eval = 0.95 }
-    t.near(e(cand(), c), 0.95)
-    t.near(ev({ "ev_zero" })(cand(), c), 0)
-end)
 
 t.test("ir.compile: full pipeline, fingerprint, Policy-sort enforcement", function()
     local pol = ir.compile({ "policy",
-        { "ev_zero" },
         { "and", { "not", { "is", "disabled" } }, { "min_tier", "partner" } },
-        { "add", { "scale", 1, { "quality" } } },
+        { "add", { "scale", 1, { "field", "context" } } },
         { "argmax" }, { "id" },
         { "always", { action = "next_candidate" } },
     })
@@ -279,7 +280,7 @@ local function router_config()
             m1 = { served_by = { { provider = "p1" }, { provider = "p2" } },
                    capabilities = { context = 8000 }, static_quality_hint = 0.7 },
         },
-        profiles = { default = { weights = { quality = 1.0 } } },
+        profiles = { default = { scorer = { "field", "context" } } },
         fields = { region_score = { sort = "Num", default = 0 } },   -- declared extension
     }
 end
@@ -299,8 +300,8 @@ t.test("contract.policy_ir: a policy arriving with the call is data, not code", 
     local ranked = router.rank({
         profile = "default",
         policy_ir = { "policy",
-            { "ev_zero" }, { "min_tier", "partner" },
-            { "field", "quality_hint" }, { "argmax" }, { "id" },
+            { "min_tier", "partner" },
+            { "field", "context" }, { "argmax" }, { "id" },
             { "always", { action = "next_candidate" } },
         },
     })
@@ -313,7 +314,7 @@ t.test("contract.policy_ir works without any profile", function()
     local ranked = router.rank({
         profile = "nope_not_a_profile",
         policy_ir = { "policy",
-            { "ev_zero" }, { "top" }, { "field", "quality_hint" }, { "argmax" }, { "id" },
+            { "top" }, { "field", "context" }, { "argmax" }, { "id" },
             { "always", { action = "next_candidate" } },
         },
     })
@@ -324,7 +325,7 @@ t.test("config-declared fields are observable by per-call policies", function()
     fresh()
     local ranked = router.rank({
         policy_ir = { "policy",
-            { "ev_zero" }, { "cmp", "region_score", "ge", 0 },
+            { "cmp", "region_score", "ge", 0 },
             { "field", "region_score" }, { "argmax" }, { "id" },
             { "always", { action = "next_candidate" } },
         },
@@ -335,7 +336,7 @@ end)
 t.test("a malformed per-call policy is rejected at admission", function()
     fresh()
     local ok, err = pcall(function()
-        router.rank({ policy_ir = { "policy", { "ev_zero" }, { "cmp", "wat", "le", 1 },
+        router.rank({ policy_ir = { "policy", { "cmp", "wat", "le", 1 },
             { "zero" }, { "argmax" }, { "id" }, { "always", { action = "next_candidate" } } } })
     end)
     t.falsy(ok, "undeclared field never reaches execution")
@@ -344,8 +345,8 @@ end)
 
 t.test("gate demotes to 0 without dropping (the legacy breaker behavior, stated)", function()
     local pol = ir.compile({ "policy",
-        { "ev_zero" }, { "top" },
-        { "gate", { "not", { "is", "breaker_open" } }, { "field", "quality_hint" } },
+        { "top" },
+        { "gate", { "not", { "is", "breaker_open" } }, { "field", "context" } },
         { "argmax" }, { "id" },
         { "always", { action = "next_candidate" } },
     })
@@ -367,8 +368,10 @@ t.test("declarative profiles now compile through the IR (fingerprint in trace)",
     t.truthy(res.trace.policy_term and res.trace.policy_term[1] == "policy",
         "and its normal-form term — the data a host can surface/copy/commit")
 
-    local bd = router.rank({ profile = "default" })[1].score_breakdown
-    t.truthy(bd.quality ~= nil, "named-atom breakdown preserved through the IR")
+    -- (sigma-pol/v2) the profile scores on a raw field now, not a composite
+    -- atom; the ranking just has to come out scored and ordered.
+    local ranked = router.rank({ profile = "default" })
+    t.truthy(ranked[1] and ranked[1].score ~= nil, "profile ranks through the IR")
 end)
 
 t.test("config.policy_envelope: callers narrow, never widen", function()
@@ -384,7 +387,7 @@ t.test("config.policy_envelope: callers narrow, never widen", function()
 
     local ranked = router.rank({
         policy_ir = { "policy",                         -- caller tries top (allow-all)
-            { "ev_zero" }, { "top" }, { "field", "quality_hint" }, { "argmax" }, { "id" },
+            { "top" }, { "field", "context" }, { "argmax" }, { "id" },
             { "always", { action = "next_candidate" } },
         },
     })
@@ -392,7 +395,7 @@ t.test("config.policy_envelope: callers narrow, never widen", function()
     t.eq(ranked[1].candidate.provider_id, "p1")
 
     local bad = { providers = cfg.providers, models = cfg.models,
-                  profiles = cfg.profiles, policy_envelope = { "quality" } }
+                  profiles = cfg.profiles, policy_envelope = { "zero" } }  -- Scorer, not a Pred
     r.reset()
     local ok, err = router.init(bad)
     t.falsy(ok, "non-Pred envelope rejected at init")
@@ -409,7 +412,7 @@ t.test("IR FailPlan drives the engine sequence", function()
     local res = router.execute({
         prompt = "hi",
         policy_ir = { "policy",
-            { "ev_zero" }, { "top" }, { "field", "quality_hint" }, { "argmax" }, { "id" },
+            { "top" }, { "field", "context" }, { "argmax" }, { "id" },
             { "override", { "always", { action = "next_candidate" } },
               "rate_limit", { action = "abort" } },
         },

@@ -8,11 +8,12 @@
 -- than op-by-op code.
 --
 -- The signature is versioned and APPEND-ONLY within a major version (see
--- docs/SIGMA-POL.md §1.1): adding a symbol keeps the sigma-pol/v1 tag —
--- existing terms stay byte-identical and a host predating the op rejects it
--- at admission (unknown op) rather than diverging. Removing or retyping a
--- symbol, or changing the encoding/normal form, is a major bump that rotates
--- the tag and every identity. Data extensibility still lives in the field
+-- docs/SIGMA-POL.md §1.1): adding a symbol keeps the tag — existing terms stay
+-- byte-identical and a host predating the op rejects it at admission (unknown
+-- op) rather than diverging. Removing or retyping a symbol, or changing the
+-- encoding/normal form, is a major bump that rotates the tag and every
+-- identity — which is exactly why dropping the composite scorer atoms took the
+-- tag from sigma-pol/v1 to v2. Data extensibility still lives in the field
 -- schema (llm_policy.fields) — candidates may carry any declared field; the
 -- operations never grow per-field. Terms over this signature are the IR:
 -- plain arrays { op, arg1, ..., argn }, serializable, hashable, and
@@ -20,12 +21,12 @@
 
 local S = {}
 
-S.VERSION = "sigma-pol/v1"
+S.VERSION = "sigma-pol/v2"
 
 -- Operational sorts: positions of these sorts take subterms.
 S.OP_SORTS = {
     Pred = true, Scorer = true, Selector = true, Xform = true,
-    FailPlan = true, Evidence = true, Policy = true,
+    FailPlan = true, Policy = true,
 }
 
 -- Parameter sorts and how to validate their values (see llm_policy.term):
@@ -74,11 +75,12 @@ S.ops = {
     clamp         = { out = "Scorer", ins = { "Num", "Num", "Scorer" } },
     field         = { out = "Scorer", ins = { "NumField" } },
     lit           = { out = "Scorer", ins = { "Num" } },
-    quality       = { out = "Scorer", ins = {} },
-    speed         = { out = "Scorer", ins = {} },
-    cost          = { out = "Scorer", ins = {} },
-    free_credit   = { out = "Scorer", ins = {} },
-    partner       = { out = "Scorer", ins = {} },
+    -- NOTE (sigma-pol/v2): the composite scorer atoms quality/speed/cost/
+    -- partner/free_credit were REMOVED. They folded raw fields + request knobs
+    -- (max_cost_usd, max_latency_ms, token estimates) into one opaque number
+    -- with baked-in host defaults — not observables. Score on the raw fields
+    -- instead: field("price_in"), field("latency_ms"), etc., with normalize/
+    -- neg/scale/add. Their removal is what bumps v1 -> v2 (§1.1).
 
     -- Selector — scored population -> ordering (seed enters here) --------
     argmax        = { out = "Selector", ins = {} },
@@ -103,16 +105,14 @@ S.ops = {
     always        = { out = "FailPlan", ins = { "Action" } },
     override      = { out = "FailPlan", ins = { "FailPlan", "FailReason", "Action" } },
 
-    -- Evidence — provisional semimodule (claims by provenance) -----------
-    ev_zero       = { out = "Evidence", ins = {} },
-    ev_add        = { out = "Evidence", variadic = "Evidence", ac = true, unit = "ev_zero" },
-    ev_scale      = { out = "Evidence", ins = { "Num", "Evidence" } },
-    decay         = { out = "Evidence", ins = { "Num", "Evidence" } },
-    from_prov     = { out = "Evidence", ins = { "Provenance" } },
-
     -- Policy — the single constructor -------------------------------------
+    -- (sigma-pol/v2) The Evidence slot and its whole sub-algebra (ev_zero/
+    -- ev_add/ev_scale/decay/from_prov) were REMOVED. Evidence never affected
+    -- the decision — the interpreter built the policy from filter/scorer/
+    -- selector/xform/failplan and ignored the evidence term — and `from_prov`
+    -- read the phantom `quality`/uncomputed claims. A policy is now five slots.
     policy        = { out = "Policy",
-                      ins = { "Evidence", "Pred", "Scorer", "Selector", "Xform", "FailPlan" } },
+                      ins = { "Pred", "Scorer", "Selector", "Xform", "FailPlan" } },
 }
 
 return S

@@ -1,7 +1,7 @@
--- Golden-vector generator for sigma-pol/v1 conformance.
+-- Golden-vector generator for sigma-pol/v2 conformance.
 --
 -- Builds the vector inputs, computes every expectation with the REFERENCE
--- implementation (this repo), and writes tests/golden/sigma_pol_v1.json.
+-- implementation (this repo), and writes tests/golden/sigma_pol_v2.json.
 -- The vectors are the executable spec: a host implementing Σ_pol in any
 -- language replays the same JSON and must reproduce encoding, fingerprint,
 -- and decisions bit-for-bit (scores within 1e-12).
@@ -17,7 +17,7 @@ local json = require("_json")
 
 local T = ir.term
 
-local OUT = "tests/golden/sigma_pol_v1.json"
+local OUT = "tests/golden/sigma_pol_v2.json"
 
 -- ---- shared fixtures ---------------------------------------------------------
 
@@ -59,7 +59,7 @@ add{ name = "encoding-ac-sorting", kind = "encoding",
 
 -- 2. canonical number formatting (%.17g for non-integers)
 add{ name = "encoding-number-format", kind = "encoding",
-     term = { "and", { "cmp", "quality_hint", "ge", 0.1 }, { "cmp", "context", "ge", 4000 } } }
+     term = { "and", { "cmp", "context", "ge", 0.1 }, { "cmp", "context", "ge", 4000 } } }
 
 -- 2b. exponent-form numbers: the spec's §4.1 grammar (e±dd, C99 two-digit
 -- minimum). A host whose printf pads exponents to three digits (or renders
@@ -67,7 +67,7 @@ add{ name = "encoding-number-format", kind = "encoding",
 -- vector makes that a conformance failure instead of a silent divergence.
 add{ name = "encoding-number-exponent-form", kind = "encoding",
      term = { "and",
-         { "cmp", "quality_hint", "ge", 1e-05 },
+         { "cmp", "context", "ge", 1e-05 },
          { "cmp", "price_out",    "le", 2.5e-10 },
          { "cmp", "context",      "le", 1e+100 } } }
 
@@ -114,11 +114,10 @@ add{ name = "pred-family-set", kind = "pred",
 -- 6. Policy decision: argmax over a gated, weighted scorer
 add{ name = "policy-argmax-gate", kind = "policy",
      term = { "policy",
-         { "ev_zero" },
          { "min_tier", "marketplace" },
          { "gate", { "not", { "is", "breaker_open" } },
-           { "add", { "scale", 0.6, { "field", "quality_hint" } },
-                    { "scale", 0.4, { "quality" } } } },
+           { "add", { "scale", 0.6, { "field", "context" } },
+                    { "scale", 0.4, { "neg", { "normalize", { "field", "price_in" } } } } } },
          { "argmax" }, { "id" },
          { "always", { action = "next_candidate" } } },
      candidates = POP, ctx = CTX }
@@ -126,7 +125,7 @@ add{ name = "policy-argmax-gate", kind = "policy",
 -- 7. Policy decision: seeded softmax sample
 add{ name = "policy-sample-seeded", kind = "policy",
      term = { "policy",
-         { "ev_zero" }, { "top" }, { "field", "quality_hint" },
+         { "top" }, { "field", "context" },
          { "sample", 0.5 }, { "id" },
          { "always", { action = "next_candidate" } } },
      candidates = POP, ctx = CTX }
@@ -134,7 +133,7 @@ add{ name = "policy-sample-seeded", kind = "policy",
 -- 8. Policy decision: population-relative normalize
 add{ name = "policy-normalize", kind = "policy",
      term = { "policy",
-         { "ev_zero" }, { "top" }, { "normalize", { "field", "quality_hint" } },
+         { "top" }, { "normalize", { "field", "context" } },
          { "argmax" }, { "id" },
          { "always", { action = "next_candidate" } } },
      candidates = POP, ctx = { request = { requirements = {} }, now_ms = 0 } }
@@ -142,7 +141,7 @@ add{ name = "policy-normalize", kind = "policy",
 -- 8b. Policy decision: top_k shortlists to k after the inner selector orders
 add{ name = "policy-top-k", kind = "policy",
      term = { "policy",
-         { "ev_zero" }, { "top" }, { "field", "quality_hint" },
+         { "top" }, { "field", "context" },
          { "top_k", 2, { "argmax" } }, { "id" },
          { "always", { action = "next_candidate" } } },
      candidates = POP, ctx = { request = { requirements = {} }, now_ms = 0 } }
@@ -165,11 +164,6 @@ add{ name = "failplan-classify", kind = "failplan",
            "auth_error", { action = "disable_provider" } },
          "server_error", { action = "retry_same", attempts = 2, backoff_ms = 500 } },
      cases = { "auth_error", "server_error", "rate_limit" } }
-
--- 11. Evidence: from_prov("self") reads own quality state
-add{ name = "evidence-self", kind = "evidence",
-     term = { "ev_scale", 2, { "from_prov", "self" } },
-     candidate = POP[1], ctx = CTX }
 
 -- ---- compute expectations with the reference implementation --------------------
 
@@ -217,9 +211,6 @@ for _, v in ipairs(VECTORS) do
             out[i] = { kind = kind, action = sequence.classify(fp, kind) }
         end
         v.expect.classified = out
-    elseif v.kind == "evidence" then
-        local e = ir.eval_sort(v.term)
-        v.expect.value = e(v.candidate, v.ctx)
     end
 end
 

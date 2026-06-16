@@ -9,9 +9,9 @@ local function enc(x) return T.encode(T.normalize(x)) end
 
 t.test("check: a well-formed policy term has sort Policy", function()
     local sort, err = T.check({ "policy",
-        { "ev_zero" },
         { "and", { "meets_req" }, { "cmp", "price_out", "le", 25 } },
-        { "add", { "scale", 0.7, { "cost" } }, { "scale", 0.3, { "quality" } } },
+        { "add", { "scale", 0.7, { "neg", { "normalize", { "field", "price_out" } } } },
+                 { "scale", 0.3, { "field", "context" } } },
         { "argmax" },
         { "seq", { "filter_text", { "NFKC" } }, { "clamp_param", "temperature", 0, 1 } },
         { "override", { "always", { action = "next_candidate" } },
@@ -52,7 +52,7 @@ t.test("check: rejects unknown ops, bad arity, bad params", function()
     sort, err = T.check({ "always", { action = "explode" } })
     t.falsy(sort); t.contains(err, "Action.action invalid")
 
-    sort, err = T.check({ "and", { "meets_req" }, { "quality" } })  -- sort mismatch
+    sort, err = T.check({ "and", { "meets_req" }, { "zero" } })  -- Scorer in a Pred slot
     t.falsy(sort); t.contains(err, "expected Pred")
 end)
 
@@ -113,24 +113,24 @@ t.test("normalize: units, absorbing elements, involution", function()
 end)
 
 t.test("normalize: scorer semimodule laws (identities only, no 𝕍 arithmetic)", function()
-    t.eq(enc({ "scale", 1, { "quality" } }), enc({ "quality" }), "scale(1) is identity")
-    t.eq(enc({ "scale", 0, { "quality" } }), enc({ "zero" }), "scale(0) annihilates")
-    t.eq(enc({ "add", { "quality" }, { "zero" } }), enc({ "quality" }), "zero is the unit of add")
-    t.eq(enc({ "normalize", { "normalize", { "cost" } } }),
-         enc({ "normalize", { "cost" } }), "normalize is idempotent")
+    t.eq(enc({ "scale", 1, { "field", "context" } }), enc({ "field", "context" }), "scale(1) is identity")
+    t.eq(enc({ "scale", 0, { "field", "context" } }), enc({ "zero" }), "scale(0) annihilates")
+    t.eq(enc({ "add", { "field", "context" }, { "zero" } }), enc({ "field", "context" }), "zero is the unit of add")
+    t.eq(enc({ "normalize", { "normalize", { "field", "price_in" } } }),
+         enc({ "normalize", { "field", "price_in" } }), "normalize is idempotent")
     -- deliberately NOT fused: the normal form must not depend on the numeric
     -- model, so nested scales stay nested (already canonical)
-    t.eq(enc({ "scale", 2, { "scale", 3, { "quality" } } }),
-         T.encode({ "scale", 2, { "scale", 3, { "quality" } } }),
+    t.eq(enc({ "scale", 2, { "scale", 3, { "field", "context" } } }),
+         T.encode({ "scale", 2, { "scale", 3, { "field", "context" } } }),
         "no float products in the normalizer")
     -- gate laws
-    t.eq(enc({ "gate", { "top" }, { "quality" } }), enc({ "quality" }), "gate(top) is identity")
-    t.eq(enc({ "gate", { "bot" }, { "quality" } }), enc({ "zero" }), "gate(bot) annihilates")
+    t.eq(enc({ "gate", { "top" }, { "field", "context" } }), enc({ "field", "context" }), "gate(top) is identity")
+    t.eq(enc({ "gate", { "bot" }, { "field", "context" } }), enc({ "zero" }), "gate(bot) annihilates")
     t.eq(enc({ "gate", { "is", "has_tee" }, { "zero" } }), enc({ "zero" }), "gate of zero is zero")
 end)
 
 t.test("check: admission bounds reject pathological terms", function()
-    local deep = { "quality" }
+    local deep = { "field", "context" }
     for _ = 1, 100 do deep = { "neg", deep } end
     local sort, err = T.check(deep)
     t.falsy(sort); t.contains(err, "max depth")
