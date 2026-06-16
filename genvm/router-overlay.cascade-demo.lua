@@ -13,12 +13,10 @@ return {
     },
     profiles = {
         default = {
-            weights = {
-                quality = 0.3,
-                partner = 0.5,   -- crank partner so tier dominates
-                speed   = 0.1,
-                cost    = 0.1,
-            },
+            -- (sigma-pol/v2) `weights`/composite atoms removed; score on real
+            -- fields. Tier preference is now a FILTER concern (min_tier/tier_eq),
+            -- not a scorer — partner can't be a scoring dimension any more.
+            scorer = { "neg", { "normalize", { "field", "price_in" } } },
             retry_policy = "default",
         },
     },
