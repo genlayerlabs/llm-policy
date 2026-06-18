@@ -64,6 +64,7 @@ local deep_copy      = util.deep_copy
 local table_keys     = util.table_keys
 local table_contains = util.table_contains
 local pm_key         = util.pm_key
+local cand_peer      = util.cand_peer
 
 local function host_log(level, event, fields)
     if host and host.log then
@@ -155,6 +156,11 @@ local function seed_runtime_from_metrics(metrics)
                 -- skip malformed
                 goto continue
             end
+            -- Peer-blind by design: seeded metrics are family-granular (keys are
+            -- "<family>@<provider>", no peer). Marketplace per-peer reliability is
+            -- live-only (peers are discovered at runtime, not seedable), so a
+            -- marketplace family seeded here is NOT read for a per-peer candidate
+            -- (see util.cand_peer); this path serves static/configured providers.
             local k = pm_key(provider, family)
             RUNTIME.ema_metrics[k] = {
                 ema_latency_ms    = mm.ttft_ms_p50,
@@ -291,6 +297,9 @@ function M.restore_state(snapshot)
     return true, nil
 end
 
+-- Host-facing patch of family-granular runtime metrics. Peer-blind by design:
+-- per-peer marketplace reliability is learned live (update_ema, keyed by
+-- util.cand_peer), never patched through this family-granular entry point.
 function M.update_metrics(provider_id, model_family, delta)
     local k = pm_key(provider_id, model_family)
     local cur = RUNTIME.ema_metrics[k] or { n = 0 }
@@ -940,7 +949,7 @@ local function handle_response(state, response)
     state.pending_cand = nil
     state.awaiting     = nil
 
-    update_ema(cand.provider_id, cand.model_family, cand.offer and cand.offer.peer_id or nil,
+    update_ema(cand.provider_id, cand.model_family, cand_peer(cand),
                elapsed, response.ok and true or false)
 
     local event = {

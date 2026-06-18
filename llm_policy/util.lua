@@ -44,6 +44,20 @@ function U.pm_key(provider_id, model_family, peer_id)
     return provider_id .. "|" .. model_family
 end
 
+-- The seller peer a candidate's runtime state is keyed under: marketplace
+-- candidates carry an `offer.peer_id` (reliability/latency learned PER seller
+-- peer); static providers carry no offer -> nil -> keyed on provider|family.
+-- This is the SINGLE source of the marketplace-vs-static keying decision: every
+-- site that keys an EMA slot *from a candidate* goes through here, so the live
+-- read and write paths cannot drift apart (a per-peer write that a peer-blind
+-- read never finds). Seeded/host-patched metrics are family-granular and keyed
+-- peer-blind on purpose (see seed_runtime_from_metrics / M.update_metrics):
+-- marketplace peers are discovered at runtime, not seedable, so their per-peer
+-- reliability is learned live, never seeded.
+function U.cand_peer(cand)
+    return cand.offer and cand.offer.peer_id or nil
+end
+
 -- Deterministic, portable PRNG (MINSTD LCG). Stays < 2^53 so it is identical
 -- under any Lua (5.4 ints, mlua, float-only). Warms up so small seeds (1,2,3…)
 -- decorrelate. Returns a closure yielding floats in (0,1). Used by seeded

@@ -95,3 +95,29 @@ t.test("marketplace reliability is learned per seller peer", function()
     -- the peer-blind key must NOT be used for marketplace outcomes
     t.truthy(ema[r.pm_key("mkt", "m1")] == nil, "no peer-blind antseed|family slot")
 end)
+
+-- Locks the seed/live boundary: per-peer marketplace reliability is live-only
+-- (peers are runtime-discovered, not seedable). A pre-existing peer-blind family
+-- slot — what seed_runtime_from_metrics / update_metrics produce — must be inert:
+-- it neither feeds a peer's judgement nor receives a peer's outcome.
+t.test("a seeded peer-blind marketplace family slot stays inert under per-peer learning", function()
+    r.reset()
+    assert(router.init(config()))
+    mock_host()
+    r.runtime().ema_metrics[r.pm_key("slow", "m1")] = { price_in = 99, n = 0 }
+    -- a family-granular slot for the marketplace family, seeded "bad".
+    r.runtime().ema_metrics[r.pm_key("mkt", "m1")] = { success_rate_ewma = 0, n = 100 }
+
+    local res = router.execute({ prompt = "hi", profile = "default" })
+    t.truthy(res.ok, "request served")
+    t.eq(res.chosen.provider_id, "mkt", "served by the marketplace provider")
+
+    local ema = r.runtime().ema_metrics
+    -- the good peer learned in its OWN slot, unaffected by the bad family seed
+    t.eq(ema[r.pm_key("mkt", "m1", "peerGood")].success_rate_ewma, 1,
+         "good peer judged on its own live slot, not the family seed")
+    -- the live write went per peer: the peer-blind family seed is untouched
+    local fam = ema[r.pm_key("mkt", "m1")]
+    t.truthy(fam ~= nil and fam.n == 100 and fam.success_rate_ewma == 0,
+             "peer-blind family seed left inert (live writes key per peer)")
+end)
