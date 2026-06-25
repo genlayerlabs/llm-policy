@@ -40,6 +40,38 @@ local METRICS = {
     },
 }
 
+local function config_with_catalog_prices()
+    return {
+        providers = {
+            cheap_p  = { discovery = "static", base_url = "http://cheap",
+                         api_kind = "openai_compatible", auth_env = "K1", tier = "partner" },
+            pricey_p = { discovery = "static", base_url = "http://pricey",
+                         api_kind = "openai_compatible", auth_env = "K2", tier = "partner" },
+        },
+        models = {
+            m1 = {
+                served_by = {
+                    { provider = "cheap_p",
+                      price_in_usd_per_mtok = 0.2, price_out_usd_per_mtok = 1.0,
+                      price_source = "operator_config", price_basis = "effective_usd_per_mtok" },
+                    { provider = "pricey_p",
+                      price_in_usd_per_mtok = 5.0, price_out_usd_per_mtok = 20.0,
+                      price_source = "operator_config", price_basis = "effective_usd_per_mtok" },
+                },
+                capabilities = { context = 8000 },
+                static_quality_hint = 0.7,
+            },
+        },
+        profiles = {
+            default = {
+                filter = { price_max = { input = 1.0, output = 5.0 } },
+                retry_policy = "balanced",
+            },
+        },
+        retry_policies = { balanced = { unknown = { action = "next_candidate" } } },
+    }
+end
+
 t.test("price_max filter rejects candidates priced over the ceiling", function()
     r.reset()
     host = { log = function() end, env = function() return nil end,
@@ -56,6 +88,27 @@ t.test("price_max filter rejects candidates priced over the ceiling", function()
         if rej.provider == "pricey_p" then why = rej.reason end
     end
     t.truthy(why, "rejection recorded for pricey_p")
+end)
+
+t.test("static served_by prices make providers routable without metrics", function()
+    r.reset()
+    host = { log = function() end, env = function() return nil end,
+             now_ms = function() return 0 end, sleep_ms = function() end }
+    assert(router.init(config_with_catalog_prices(), { models = {} }))
+    local ranked, err, rejected = router.rank({ prompt = "x", profile = "default" })
+    t.falsy(err)
+    t.eq(#ranked, 1, "only the catalog-priced in-ceiling candidate survives")
+    local cand = ranked[1].candidate
+    t.eq(cand.provider_id, "cheap_p")
+    t.eq(cand.price_in, 0.2)
+    t.eq(cand.price_out, 1.0)
+    t.eq(cand.price_source, "operator_config")
+
+    local why = nil
+    for _, rej in ipairs(rejected) do
+        if rej.provider == "pricey_p" then why = rej.reason end
+    end
+    t.truthy(why, "over-ceiling catalog-priced candidate is rejected")
 end)
 
 t.test("marketplace candidates carry offer prices into filtering", function()

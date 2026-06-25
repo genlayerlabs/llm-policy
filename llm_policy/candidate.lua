@@ -42,6 +42,21 @@ local function validate_model(family, m, providers)
         if type(s.provider) ~= "string" or providers[s.provider] == nil then
             return "models." .. family .. ".served_by[" .. i .. "].provider does not resolve"
         end
+        local price_in = s.price_in_usd_per_mtok
+        if price_in == nil then price_in = s.price_in end
+        local price_out = s.price_out_usd_per_mtok
+        if price_out == nil then price_out = s.price_out end
+        if (price_in == nil) ~= (price_out == nil) then
+            return "models." .. family .. ".served_by[" .. i .. "] prices must set input and output together"
+        end
+        if price_in ~= nil then
+            if type(price_in) ~= "number" or type(price_out) ~= "number" then
+                return "models." .. family .. ".served_by[" .. i .. "] prices must be numbers"
+            end
+            if price_in < 0 or price_out < 0 then
+                return "models." .. family .. ".served_by[" .. i .. "] prices must be non-negative"
+            end
+        end
     end
     if type(m.capabilities) ~= "table" then
         return "models." .. family .. ".capabilities required"
@@ -94,10 +109,18 @@ function C.build_candidate_matrix(providers, models)
         for _, served in ipairs(m.served_by) do
             local p = providers[served.provider]
             if p ~= nil and p.discovery == "static" then
+                local price_in = served.price_in_usd_per_mtok
+                if price_in == nil then price_in = served.price_in end
+                local price_out = served.price_out_usd_per_mtok
+                if price_out == nil then price_out = served.price_out end
                 list[#list + 1] = {
                     provider_id      = served.provider,
                     model_family     = family,
                     served_model_id  = served.provider_model_id or family,
+                    price_in         = price_in,
+                    price_out        = price_out,
+                    price_source     = served.price_source or served.pricing_source,
+                    price_basis      = served.price_basis,
                     capabilities     = m.capabilities,
                     quality_hint     = m.static_quality_hint,
                     tier             = p.tier or "fallback",
