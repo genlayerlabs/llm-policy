@@ -75,6 +75,14 @@ t.test("check: family_eq admits a family name; or-composes into a set", function
     t.falsy(sort); t.contains(err, "string (Family)")
 end)
 
+t.test("check: served_by_eq admits an executed-route id; or-composes into a peer set", function()
+    t.eq(T.check({ "served_by_eq", "peerA" }), "Pred", "a served-by id admits")
+    t.eq(T.check({ "or", { "served_by_eq", "peerA" }, { "served_by_eq", "peerB" } }),
+         "Pred", "or of served_by_eq is the peer-set filter")
+    local sort, err = T.check({ "served_by_eq", 5 })          -- non-string served-by
+    t.falsy(sort); t.contains(err, "string (ServedBy)")
+end)
+
 t.test("check: provider_eq admits a provider id; or-composes; not() excludes", function()
     t.eq(T.check({ "provider_eq", "antseed" }), "Pred", "a provider id admits")
     t.eq(T.check({ "or", { "provider_eq", "openrouter" }, { "provider_eq", "codex" } }),

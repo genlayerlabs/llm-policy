@@ -144,6 +144,15 @@ identity test; a *set* of families is the algebra's `or` of `family_eq` (the
 `not(provider_eq X)` (sugar: `provider_not_in`) — e.g. drop a marketplace
 provider while keeping the rest of the catalog.
 
+`served_by_eq` is the finer identity test over the *executed route* — the
+marketplace peer that serves a candidate, or the provider itself for a direct
+route (the same notion the engine reports as `chosen.served_by`). It lets a
+policy route by *which peer* rather than just *which provider*: pin to a set of
+peers with `or(served_by_eq A, served_by_eq B)` (sugar: `served_by_in`), or
+exclude one with `not(served_by_eq X)` (sugar: `served_by_not_in`). `provider_eq`
+groups every peer of a marketplace provider together; `served_by_eq` addresses
+one peer within it.
+
 ### 3.1 Population-relative selection lives in the data, not the ops
 
 A candidate's standing *relative to a population* — "in the top 5 by an

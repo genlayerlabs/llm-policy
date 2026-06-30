@@ -30,6 +30,12 @@ t.test("filter atoms lower to field observations", function()
     t.eq(enc(E.filter({ provider_not_in = { "antseed" } })),
          enc({ "not", { "provider_eq", "antseed" } }),
         "provider_not_in lowers to not(or(provider_eq)) — disable a provider")
+    t.eq(enc(E.filter({ served_by_in = { "peerA", "peerB" } })),
+         enc({ "or", { "served_by_eq", "peerA" }, { "served_by_eq", "peerB" } }),
+        "served_by_in lowers to or(served_by_eq) — keep only these peers")
+    t.eq(enc(E.filter({ served_by_not_in = { "peerBad" } })),
+         enc({ "not", { "served_by_eq", "peerBad" } }),
+        "served_by_not_in lowers to not(or(served_by_eq)) — drop a peer")
     t.eq(enc(E.filter({ "requirements", { tier_in = { "partner" } } })),
          enc({ "and", { "meets_req" }, { "tier_eq", "partner" } }),
         "bare list = all_of; singleton tier_in collapses")
