@@ -38,6 +38,8 @@ S.OP_SORTS = {
 --   Tier       tier name present in the schema's tier order
 --   Family     model-family name (open namespace, string)
 --   Provider   provider id (open namespace, string)
+--   ServedBy   executed-route id: marketplace peer id, or provider id for a
+--              direct route (open namespace, string) — same notion as chosen.served_by
 --   Capability capability name (open namespace, string)
 --   ParamName  request parameter name (string)
 --   Scalar     number | string | boolean
@@ -65,6 +67,7 @@ S.ops = {
     min_tier      = { out = "Pred", ins = { "Tier" } },
     family_eq     = { out = "Pred", ins = { "Family" } },    -- model-family identity (or-compose for a set)
     provider_eq   = { out = "Pred", ins = { "Provider" } },  -- provider-id identity (or-compose for a set; not() to exclude)
+    served_by_eq  = { out = "Pred", ins = { "ServedBy" } },  -- executed-route identity: a marketplace peer (or provider for direct); or-compose for a set, not() to exclude
     has_cap       = { out = "Pred", ins = { "Capability" } },
 
     -- Scorer — semimodule over Num; population-relative (normalize) ------

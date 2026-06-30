@@ -194,6 +194,18 @@ function I.default_algebra(opts)
             return false, "provider_id"
         end
     end
+    alg.served_by_eq = function(a)
+        -- The executed-route identity: the marketplace peer that serves this
+        -- candidate, or the provider itself for a direct route. Same notion the
+        -- engine reports as chosen.served_by (llm_policy.lua), so a policy can
+        -- pin/exclude a specific peer the way provider_eq does a provider.
+        local served_by = a[1]
+        return function(cand, _ctx)
+            local sb = cand.offer and cand.offer.peer_id or cand.provider_id
+            if sb == served_by then return true end
+            return false, "served_by"
+        end
+    end
     alg.has_cap = function(a)
         local cap = a[1]
         return function(cand, _ctx)

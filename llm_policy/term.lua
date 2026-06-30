@@ -152,6 +152,7 @@ local function check_param(sort, v, schema)
             return "unknown tier '" .. tostring(v) .. "'"
         end
     elseif sort == "Capability" or sort == "Family" or sort == "Provider"
+        or sort == "ServedBy"
         or sort == "ParamName" or sort == "Sym" or sort == "Provenance"
         or sort == "FailReason" then
         if type(v) ~= "string" then return "expected a string (" .. sort .. ")" end

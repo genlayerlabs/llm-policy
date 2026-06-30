@@ -78,6 +78,22 @@ t.test("provider_eq matches the candidate's provider; not()/or exclude or restri
     t.falsy(only(cand(), ctx()), "p1 is not in the allowed set")
 end)
 
+t.test("served_by_eq matches the executed route: a marketplace peer, or the provider for a direct route", function()
+    -- direct route: served_by is the provider id (no offer)
+    t.truthy(ev({ "served_by_eq", "p1" })(cand(), ctx()), "direct route served_by == provider_id")
+    -- marketplace route: served_by is the offer's peer id, NOT the provider id
+    local peer = cand({ provider_id = "antseed", offer = { peer_id = "peerA" } })
+    t.truthy(ev({ "served_by_eq", "peerA" })(peer, ctx()), "marketplace served_by == offer.peer_id")
+    local ok, why = ev({ "served_by_eq", "antseed" })(peer, ctx())
+    t.falsy(ok, "the provider id does NOT match a pinned peer's served_by")
+    t.contains(why, "served_by")
+    -- "only these peers" on or(served_by_eq); "drop a peer" on not()
+    local only = ev({ "or", { "served_by_eq", "peerA" }, { "served_by_eq", "peerB" } })
+    t.truthy(only(peer, ctx()), "peerA is in the allowed set")
+    t.falsy(only(cand({ provider_id = "antseed", offer = { peer_id = "peerZ" } }), ctx()),
+            "peerZ is not in the allowed set")
+end)
+
 t.test("boolean structure: and short-circuits with reason, not inverts", function()
     local p = ev({ "and", { "tier_eq", "partner" }, { "cmp", "context", "ge", 1e9 } })
     local ok, why = p(cand(), ctx())

@@ -76,6 +76,16 @@ function E.filter(spec)
             for _, p in ipairs(spec.provider_not_in) do out[#out + 1] = { "provider_eq", p } end
             return { "not", #out == 2 and out[2] or out }
         end
+        if spec.served_by_in then          -- keep only these executed routes (peers)
+            local out = { "or" }
+            for _, s in ipairs(spec.served_by_in) do out[#out + 1] = { "served_by_eq", s } end
+            return #out == 2 and out[2] or out
+        end
+        if spec.served_by_not_in then      -- drop these executed routes (peers)
+            local out = { "or" }
+            for _, s in ipairs(spec.served_by_not_in) do out[#out + 1] = { "served_by_eq", s } end
+            return { "not", #out == 2 and out[2] or out }
+        end
         -- (sigma-pol/v2) quality_min/quality_max removed with the `quality`
         -- field: it denoted no observable (hand-assigned hint / uncomputed eval).
         -- Gate on a real field instead (e.g. price/latency/context).
