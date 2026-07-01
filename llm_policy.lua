@@ -351,8 +351,15 @@ local function gather_marketplace_candidates(now_ms)
                         served_model_id = offer.wire_model_id or offer.model_family,
                         capabilities    = offer.capabilities or {},
                         quality_hint    = offer.quality_hint,
-                        price_in        = offer.price_in_usd_per_mtok,
-                        price_out       = offer.price_out_usd_per_mtok,
+                        -- Raw marketplace quote stays on `offer`; the host may
+                        -- add effective prices for ranking-only provider
+                        -- multipliers (credits/risk/surcharge). Static routes
+                        -- get the same treatment through ema_metrics.
+                        price_in        = offer.effective_price_in_usd_per_mtok
+                                          or offer.price_in_usd_per_mtok,
+                        price_out       = offer.effective_price_out_usd_per_mtok
+                                          or offer.price_out_usd_per_mtok,
+                        price_multiplier = offer.ranking_price_multiplier,
                         -- host-measured reliability/perf for THIS route, stamped
                         -- on the offer like price; observed pointwise by the
                         -- algebra (fields.lua), which needs no notion of route.
@@ -953,6 +960,7 @@ local function handle_response(state, response)
                 -- can stamp an executed cost on the request record
                 price_in        = cand.price_in,
                 price_out       = cand.price_out,
+                price_multiplier = cand.price_multiplier,
                 -- which route actually served the call: the marketplace peer,
                 -- or the provider itself for direct routes. The host attributes
                 -- the call to this per-route identity for per-route stats.
